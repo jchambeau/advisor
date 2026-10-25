@@ -278,3 +278,13 @@ def test_interrupted_run_still_writes_notes(tmp_path, monkeypatch, capsys):
         main(["--config", str(tmp_path / "config.yaml"), "extract"])
     assert len(list((tmp_path / "vault" / "Sources").glob("*.md"))) == 1
     assert list((tmp_path / "vault" / "Journal").glob("*.md"))
+
+
+def test_a_title_cannot_forge_a_block_marker(tmp_path):
+    assert "<!--" not in vault.md_text("<!<!---- signals --<!---->>") and "-->" not in vault.md_text("a --->> b")
+    journal = vault.write_digest(tmp_path, TODAY, ["- title <!-- signals --> inline"])
+    journal.write_text(journal.read_text(encoding="utf-8") + "\nMY OWN NOTES\n", encoding="utf-8")
+    vault.write_digest(tmp_path, TODAY, ["signals"], block="signals")
+    vault.write_digest(tmp_path, TODAY, ["signals again"], block="signals")
+    text = journal.read_text(encoding="utf-8")
+    assert "MY OWN NOTES" in text and "signals again" in text and "<!-- /auto -->" in text

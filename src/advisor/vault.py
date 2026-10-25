@@ -155,7 +155,7 @@ def write_block(path: Path, lines: list[str], block: str = "auto", first: bool =
     start_marker, end_marker = (AUTO_START, AUTO_END) if block == "auto" else (f"<!-- {block} -->", f"<!-- /{block} -->")
     text = f"{start_marker}\n" + "\n".join(lines) + f"\n{end_marker}"
     old = path.read_text(encoding="utf-8") if path.exists() else ""
-    start = old.find(start_marker)
+    start = _marker_line(old, start_marker)
     end = old.rfind(end_marker)
     if start != -1 and end > start:
         content = old[:start] + text + old[end + len(end_marker):]
@@ -166,6 +166,12 @@ def write_block(path: Path, lines: list[str], block: str = "auto", first: bool =
     else:
         content = old.rstrip("\n") + "\n\n" + text + "\n"
     path.write_text(content, encoding="utf-8")
+
+
+def _marker_line(text: str, marker: str) -> int:
+    """Position of the marker standing alone on its line (as written), or -1."""
+    match = re.search(rf"^{re.escape(marker)}$", text, re.M)
+    return match.start() if match else -1
 
 
 def source_name(doc: sqlite3.Row) -> str:
@@ -182,7 +188,12 @@ def write_source(vault: Path, doc: sqlite3.Row, lines: list[str]) -> Path:
 
 def md_text(text: str) -> str:
     """Keep external text from breaking the note's links and lists."""
-    text = str(text).replace("<!--", "").replace("-->", "")
+    text = str(text)
+    while True:  # until stable: "<!<!---- x --<!---->>" must not rebuild a block marker
+        cleaned = text.replace("<!--", "").replace("-->", "")
+        if cleaned == text:
+            break
+        text = cleaned
     return " ".join(text.replace("[", "(").replace("]", ")").replace("|", "/").split())
 
 
