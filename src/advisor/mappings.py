@@ -158,11 +158,15 @@ def isin_by_code(conn: sqlite3.Connection) -> dict[str, str]:
 
 
 def codes_to_look_up(conn: sqlite3.Connection, codes: list[str], today: date, retry_days: int) -> list[str]:
-    """Codes never looked up on their page, or whose last lookup found nothing `retry_days` ago."""
+    """Codes never looked up on their page, or last looked up `retry_days` ago or more.
+
+    Codes already mapped never get here, so a page is read again only while its stock stays
+    unmatched (e.g. its ISIN joins a later list, or the page showed nothing).
+    """
     cutoff = (today - timedelta(days=retry_days)).isoformat()
     checked = {
         r["boursorama_code"]
-        for r in conn.execute("SELECT boursorama_code FROM isin_lookup WHERE isin IS NOT NULL OR checked_on > ?", (cutoff,))
+        for r in conn.execute("SELECT boursorama_code FROM stock_page_isin WHERE checked_on > ?", (cutoff,))
     }
     return [c for c in codes if c not in checked]
 
@@ -170,7 +174,7 @@ def codes_to_look_up(conn: sqlite3.Connection, codes: list[str], today: date, re
 def record_lookup(conn: sqlite3.Connection, code: str, isin: str | None, today: date) -> None:
     with conn:
         conn.execute(
-            "INSERT OR REPLACE INTO isin_lookup (boursorama_code, isin, checked_on) VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO stock_page_isin (boursorama_code, isin, checked_on) VALUES (?, ?, ?)",
             (code, isin, today.isoformat()),
         )
 
@@ -182,7 +186,7 @@ def matches_from_lookups(conn: sqlite3.Connection, companies: list[sqlite3.Row],
     marks = ",".join("?" * len(codes))
     found = {
         r["boursorama_code"]: r["isin"]
-        for r in conn.execute(f"SELECT boursorama_code, isin FROM isin_lookup WHERE boursorama_code IN ({marks})", codes)
+        for r in conn.execute(f"SELECT boursorama_code, isin FROM stock_page_isin WHERE boursorama_code IN ({marks})", codes)
         if r["isin"] in market and r["isin"] not in mapped
     }
     return _keep_one_per_isin(found, market, strict=True)[0]
@@ -210,10 +214,44 @@ def save_page_matches(conn: sqlite3.Connection, found: dict[str, str]) -> None:
             )
 
 
-def export_unmatched(path: Path, unmatched: list[tuple[str, str]]) -> Path:
+NOT_LISTED = "not in the Euronext list: nothing to do"
+OTHER_VENUE = "other line of a matched company (another venue): nothing to do"
+NOTHING_TO_DO = {NOT_LISTED, OTHER_VENUE}
+
+
+def export_unmatched(
+    conn: sqlite3.Connection, path: Path, unmatched: list[tuple[str, str]], universe: set[str]
+) -> tuple[Path, int]:
+    """Write the unmatched stocks with why each one is left out; those to act on come first.
+
+    Returns the path and the number of stocks that need nothing (their page shows an ISIN
+    outside the Euronext list: Boursorama's PEA PME filter is wider than the official list).
+    """
+    on_page = {
+        r["boursorama_code"]: r["isin"] for r in conn.execute("SELECT boursorama_code, isin FROM stock_page_isin")
+    }
+    known = {r["isin"] for r in conn.execute("SELECT isin FROM company")}
+    mapped = set(isin_by_code(conn).values())
+    lines = []
+    for code, name in unmatched:
+        isin = on_page.get(code)
+        if code not in on_page:
+            note = "page not read yet"
+        elif isin is None:
+            note = "no ISIN on the page"
+        elif isin in mapped:
+            note = OTHER_VENUE
+        elif isin in universe:
+            note = "ISIN of the list not matched yet: next run, or add it to mappings.csv"
+        elif isin in known:
+            note = "excluded in overrides.yaml or removed from the list"
+        else:
+            note = NOT_LISTED
+        lines.append((code, name, isin or "", note))
+    nothing_to_do = sum(1 for line in lines if line[3] in NOTHING_TO_DO)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(["boursorama_code", "boursorama_name"])
-        w.writerows(sorted(unmatched, key=lambda r: r[1]))
-    return path
+        w.writerow(["boursorama_code", "boursorama_name", "isin_on_page", "note"])
+        w.writerows(sorted(lines, key=lambda r: (r[3] in NOTHING_TO_DO, r[3], r[1])))
+    return path, nothing_to_do

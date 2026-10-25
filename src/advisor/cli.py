@@ -121,9 +121,14 @@ def cmd_fetch_volumes(args) -> int:
         unmatched = [(c, nm) for c, nm in unmatched if c not in codes]
         n = boursorama.save(conn, rows, codes, currency_by_isin, day)
     print(f"Session of {day} saved for {n} companies")
+    # Written even when empty, so an old list of stocks to fix never lingers.
+    path, nothing_to_do = mappings.export_unmatched(
+        conn, cfg.exports / "unmatched_boursorama.csv", unmatched, {c["isin"] for c in companies}
+    )
     if unmatched:
-        path = mappings.export_unmatched(cfg.exports / "unmatched_boursorama.csv", unmatched)
-        print(f"{len(unmatched)} stocks not matched: see {path} and complete {cfg.mappings.name}")
+        print(f"{len(unmatched)} stocks not matched, {nothing_to_do} of them outside the list or "
+              f"secondary lines (nothing to do): see {path}; "
+              f"complete {cfg.mappings.name} for the {len(unmatched) - nothing_to_do} others")
     return 0
 
 
@@ -139,12 +144,12 @@ def _look_up_on_pages(cfg, conn, companies, unmatched_codes: list[str]) -> None:
         try:
             for code, isin in boursorama.look_up_isins(cfg.boursorama, to_check):
                 # Recorded one by one, so an interrupted run keeps the pages already read.
-                mappings.record_lookup(conn, code, isin if isin in known else None, today)
+                mappings.record_lookup(conn, code, isin, today)
                 read += 1
                 found += isin in known
                 progress.update(read, code)
         finally:
-            progress.done(f"{found} of {read} pages read show a listed ISIN")
+            progress.done(f"{found} of {read} pages read show an ISIN of the list")
     mappings.save_page_matches(conn, mappings.matches_from_lookups(conn, companies, unmatched_codes))
 
 
