@@ -12,7 +12,7 @@ stops if it cannot find it), so the tool can move to a VPS later without code ch
 ## Setup (Fedora)
 
 ```bash
-sudo dnf install -y python3 python3-pip git
+sudo dnf install -y python3 git
 git clone https://github.com/jchambeau/advisor ~/advisor && cd ~/advisor
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,history]"
@@ -91,7 +91,8 @@ systemctl --user list-timers advisor-daily.timer   # next run
 journalctl --user -u advisor-daily.service         # output of past runs
 ```
 
-The timer runs Monday to Friday at 19:00 Paris time. It only fires while your user session
+The timer runs Monday to Friday at 19:00 Paris time, and again at 22:00 to catch an evening
+when the machine was asleep or offline (the second run only rewrites the same session). It only fires while your user session
 is open; to run it when you are logged out, enable lingering once with
 `sudo loginctl enable-linger $USER`. The units assume the repository lives in `~/advisor`.
 

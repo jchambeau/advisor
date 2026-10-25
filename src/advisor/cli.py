@@ -65,9 +65,10 @@ def cmd_fetch_volumes(args) -> int:
     cfg, conn = _context(args)
     day = _day(args.date)
     # The page only shows the latest session: saving it under another date would duplicate it.
+    # Market closed (weekend, holiday) is a normal skip and returns 0; real problems return 1.
     if day.weekday() >= 5 and not args.force:
         print(f"{day} is a weekend day: nothing saved (--force to save anyway).")
-        return 1
+        return 0
     if day != date.today() and not args.force:
         print(f"The page only shows the latest session, not {day}: nothing saved (--force to save anyway).")
         return 1
@@ -87,7 +88,7 @@ def cmd_fetch_volumes(args) -> int:
     if repeated is not None and repeated >= 0.8 and not args.force:
         print(f"{repeated:.0%} of stocks show the same close and volume as the previous snapshot: "
               "the market was probably closed. Nothing saved (--force to save anyway).")
-        return 1
+        return 0
     currency_by_isin = {c["isin"]: liquidity.default_currency(c["market"]) for c in companies}
     n = boursorama.save(conn, rows, codes, currency_by_isin, day)
     print(f"Session of {day} saved for {n} companies")
@@ -126,8 +127,9 @@ def cmd_liquidity(args) -> int:
 
 def cmd_daily(args) -> int:
     """Evening run: volume snapshot, then liquidity update."""
-    cmd_fetch_volumes(args)  # on a holiday nothing is saved, liquidity is still refreshed
-    return cmd_liquidity(args)
+    fetched = cmd_fetch_volumes(args)
+    computed = cmd_liquidity(args)  # refreshed even when no session was saved
+    return fetched or computed
 
 
 def cmd_status(args) -> int:

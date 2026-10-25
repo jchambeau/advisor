@@ -1,10 +1,11 @@
 [Unit]
 Description=Advisor evening run (Boursorama volumes, then liquidity)
-Wants=network-online.target
-After=network-online.target
 
 [Service]
 Type=oneshot
+# Session dates are taken in Paris time, whatever the machine's timezone.
+Environment=TZ=Europe/Paris
 # Assumes the repository is cloned in ~/advisor with its virtualenv in ~/advisor/.venv.
 WorkingDirectory=%h/advisor
 ExecStart=%h/advisor/.venv/bin/advisor daily
+TimeoutStartSec=30min

@@ -2,9 +2,11 @@
 Description=Run the Advisor evening job after the Euronext close
 
 [Timer]
-# Euronext closes at 17:30 Paris time; leave time for the page to show final figures.
+# Euronext closes at 17:30 Paris time. The 22:00 run saves the same session again
+# (harmless) and catches an evening when the machine was asleep or offline at 19:00.
 OnCalendar=Mon..Fri 19:00 Europe/Paris
-# No catch-up after a missed evening: a morning run would save yesterday's figures under today's date.
+OnCalendar=Mon..Fri 22:00 Europe/Paris
+# No catch-up the next morning: it would save yesterday's figures under today's date.
 Persistent=false
 
 [Install]
