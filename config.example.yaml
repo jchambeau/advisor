@@ -8,6 +8,8 @@ paths:
   overrides: overrides.yaml         # manual inclusions and exclusions
   mappings: mappings.csv            # ISIN <-> Boursorama / Yahoo codes, editable by hand
   exports: data/exports
+  vault: vault                      # Obsidian vault (Inbox/, Journal/...); can point to an existing one
+  sources: sources.yaml             # RSS feeds, see sources.example.yaml
 
 liquidity:
   window_sessions: 63               # about 3 months of trading
@@ -31,3 +33,24 @@ boursorama:
   # Stocks the name match misses are looked up on their own page (one request each).
   max_isin_lookups: 200        # per run, so the first run stays reasonable
   isin_lookup_retry_days: 30   # page of a stock still unmatched is read again after this
+
+# News collection (`advisor collect`, also run by `advisor daily`). No language model is called.
+collect:
+  pause_seconds: 1.0           # between two requests to the same kind of source
+  timeout_seconds: 20
+  max_article_fetches: 300     # article pages read per run; the rest waits for the next run
+  max_age_days: 30             # older collected articles are skipped (manual adds are never)
+  min_text_chars: 800          # shorter text from a feed is treated as paywalled
+  paywall_markers:             # any of these in the extracted text: treated as paywalled
+    - "réservé aux abonnés"
+    - "article réservé"
+    - "contenu réservé"
+    - "abonnez-vous pour lire"
+    - "pour lire la suite"
+    - "déjà abonné"
+  boursorama_news:             # the news page of each stock (press releases, AOF dispatches)
+    enabled: true
+    url: "https://www.boursorama.com/cours/actualites/{code}/"
+    pages_per_run: 150         # stocks visited per run, the least recently visited first
+    first_visit_items: 5       # a first visit only takes the latest items, not years of history
+    liquid_only: true          # only stocks of the liquid universe

@@ -7,7 +7,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import boursorama, euronext, history, liquidity, mappings, overrides
+from . import boursorama, collect, documents, euronext, history, liquidity, mappings, overrides, sources, vault
 from .config import load
 from .db import connect
 from .progress import Progress
@@ -184,15 +184,129 @@ def cmd_liquidity(args) -> int:
     return 0
 
 
+def _liquid_isins(conn) -> set[str]:
+    return {
+        r["isin"]
+        for r in conn.execute(
+            "SELECT isin FROM liquidity WHERE status = 'liquid' "
+            "AND computed_on = (SELECT MAX(computed_on) FROM liquidity)"
+        )
+    }
+
+
+def cmd_collect(args) -> int:
+    cfg, conn = _context(args)
+    today = date.today()
+    companies = overrides.universe(conn, overrides.load(cfg.overrides))
+    summary = collect.Summary()
+    collect.take_inbox(conn, cfg, today, summary)
+    collect.take_pending(conn, cfg, today, summary)
+    with collect.client_for(cfg) as client:
+        collect.collect_feeds(conn, cfg, client, today, summary)
+        news = cfg.collect["boursorama_news"]
+        if news["enabled"] and not args.no_news_pages:
+            isins = _liquid_isins(conn) if news["liquid_only"] else {c["isin"] for c in companies}
+            if not isins:
+                summary.problems.append("no liquid company yet: stock news pages skipped (run advisor liquidity)")
+            progress = Progress("Stock news pages", total=min(len(isins), int(news["pages_per_run"])), every=25)
+            try:
+                collect.collect_news_pages(conn, cfg, client, isins, today, summary, on_page=progress.update)
+            finally:
+                progress.done(f"{summary.news_pages} pages read")
+        waiting = conn.execute(
+            "SELECT COUNT(*) AS n FROM document WHERE status = 'new' OR (status = 'fetch_failed' AND attempts < ?)",
+            (collect.MAX_ATTEMPTS,),
+        ).fetchone()["n"]
+        progress = Progress("Articles", total=min(waiting, int(cfg.collect["max_article_fetches"])), every=25)
+        try:
+            collect.fetch_texts(conn, cfg, client, today, summary, on_doc=progress.update)
+        finally:
+            progress.done(f"{summary.ready} ready, {summary.pending} waiting for you")
+    collect.link_names(conn, companies, summary.touched)
+    path = vault.write_digest(cfg.vault, today, collect.digest_lines(conn, today, summary))
+    print(f"Inbox: {summary.inbox} added, {summary.completed} completed, {summary.withdrawn} withdrawn")
+    print(f"Collected: {summary.added} new articles; {summary.ready} ready for analysis, "
+          f"{summary.pending} waiting for their text, {summary.too_old} too old, {summary.failed} failed")
+    for problem in summary.problems:
+        print(f"Warning: {problem}")
+    print(f"Digest: {path}")
+    return 0
+
+
+def cmd_add(args) -> int:
+    cfg, conn = _context(args)
+    today = date.today()
+    entries = []
+    if args.file:
+        for n, line in enumerate(Path(args.file).read_text(encoding="utf-8").splitlines(), 1):
+            parts = line.split()
+            if not parts or parts[0].startswith("#"):
+                continue
+            entries.append((parts[0], parts[1] if len(parts) > 1 else None, n))
+    if args.url:
+        entries.append((args.url, args.date, 0))
+    if not entries:
+        print("Give a URL or --file.")
+        return 1
+    added = 0
+    for url, published, line_no in entries:
+        where = f"line {line_no}: " if line_no else ""
+        if not documents.valid_url(url):
+            print(f"{where}not a URL: {url}")
+            continue
+        try:
+            day = date.fromisoformat(published) if published else None
+        except ValueError:
+            print(f"{where}bad date {published!r} (expected YYYY-MM-DD)")
+            continue
+        if collect.add_manual(conn, url, today, day) is None:
+            print(f"{where}already in the database: {url}")
+        else:
+            added += 1
+    print(f"{added} article(s) added; their text is fetched by the next `advisor collect`.")
+    return 0
+
+
+def cmd_sources_check(args) -> int:
+    cfg, _ = _context(args)
+    feeds = sources.load(cfg.sources)
+    if not feeds:
+        print(f"No feed in {cfg.sources} (copy sources.example.yaml to sources.yaml).")
+        return 1
+    failures = 0
+    with collect.client_for(cfg) as client:
+        for feed in feeds:
+            if not feed.enabled:
+                print(f"{feed.name}: disabled (not checked)")
+                continue
+            try:
+                response = client.get(feed.url)
+                response.raise_for_status()
+                items = sources.parse_feed(response.content)
+            except Exception as exc:  # report every feed, whatever goes wrong with one
+                items, error = [], f"{type(exc).__name__}: {exc}"
+            else:
+                error = None if items else "no article read (not a feed?)"
+            failures += error is not None
+            state = "ERROR " + error if error else "ok"
+            print(f"{feed.name}: {state}, {len(items)} articles" + (f", latest: {items[0].title}" if items else ""))
+    return 1 if failures else 0
+
+
 def cmd_daily(args) -> int:
-    """Evening run: volume snapshot, then liquidity update."""
+    """Evening run: volume snapshot, liquidity update, then news collection."""
     try:
         fetched = cmd_fetch_volumes(args)
     except Exception as exc:  # network error, bad mappings.csv...: still refresh liquidity
         print(f"Volume fetch failed: {exc!r}")
         fetched = 1
     computed = cmd_liquidity(args)  # refreshed even when no session was saved
-    return fetched or computed
+    try:
+        collected = cmd_collect(args)
+    except Exception as exc:
+        print(f"News collection failed: {exc!r}")
+        collected = 1
+    return fetched or computed or collected
 
 
 def cmd_status(args) -> int:
@@ -210,6 +324,8 @@ def cmd_status(args) -> int:
             "SELECT status, COUNT(*) AS n FROM liquidity WHERE computed_on = ? GROUP BY status", (r["d"],)
         ):
             print(f"  {row['status']}: {row['n']} (computed on {r['d']})")
+    counts = conn.execute("SELECT status, COUNT(*) AS n FROM document GROUP BY status ORDER BY status").fetchall()
+    print("Documents: " + (", ".join(f"{c['status']} {c['n']}" for c in counts) or "none"))
     return 0
 
 
@@ -239,9 +355,23 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--date", help="computation date (YYYY-MM-DD), default: today")
     s.set_defaults(func=cmd_liquidity)
 
-    s = sub.add_parser("daily", help="evening run: Boursorama volumes, then liquidity")
+    s = sub.add_parser("collect", help="collect news: vault Inbox, RSS feeds, stock news pages, article texts")
+    s.add_argument("--no-news-pages", action="store_true", help="skip Boursorama stock news pages")
+    s.set_defaults(func=cmd_collect)
+
+    s = sub.add_parser("add", help="add an article you found yourself")
+    s.add_argument("url", nargs="?")
+    s.add_argument("--date", help="publication date (YYYY-MM-DD) if the page does not give it")
+    s.add_argument("--file", help="text file with one URL per line, optionally followed by a date")
+    s.set_defaults(func=cmd_add)
+
+    s = sub.add_parser("sources-check", help="test every feed of sources.yaml")
+    s.set_defaults(func=cmd_sources_check)
+
+    s = sub.add_parser("daily", help="evening run: Boursorama volumes, liquidity, then news collection")
     s.add_argument("--date", help="session date (YYYY-MM-DD), default: today")
     s.add_argument("--force", action="store_true", help="see fetch-volumes")
+    s.add_argument("--no-news-pages", action="store_true", help="see collect")
     s.set_defaults(func=cmd_daily)
 
     s = sub.add_parser("status", help="summary of the database state")

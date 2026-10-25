@@ -1,0 +1,25 @@
+# News feeds read by `advisor collect`. Copy to sources.yaml and adjust.
+# These URLs could not be checked when this file was written: run `advisor sources-check`
+# and fix or disable the ones that fail.
+#
+# reliability: 1 (low) to 3 (high), carried to the signals extracted from the feed.
+# on_paywall:  pending (default): an article whose text looks incomplete waits in
+#              vault/Inbox/To-complete/ for you to paste the text or withdraw it;
+#              summary: analyse the feed summary only, without asking you.
+# Boursorama's news page of each liquid stock is read as well (see `collect` in config.yaml).
+
+feeds:
+  - name: les-echos-marches
+    url: https://services.lesechos.fr/rss/les-echos-finance-marches.xml
+    reliability: 3
+    on_paywall: summary   # mostly paywalled: keep the summary rather than asking every day
+  - name: abc-bourse
+    url: https://www.abcbourse.com/rss/displaynewsrss
+    reliability: 2
+  - name: globenewswire-france
+    url: https://www.globenewswire.com/RssFeed/country/France
+    reliability: 3        # company press releases
+  - name: zonebourse
+    url: https://www.zonebourse.com/rss/
+    reliability: 2
+    enabled: false        # enable once sources-check finds the right URL
