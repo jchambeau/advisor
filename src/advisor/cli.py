@@ -83,11 +83,14 @@ def cmd_fetch_volumes(args) -> int:
     progress = Progress("Boursorama pages", every=5)
 
     def on_page(page: int, stocks: int, total_pages: int | None) -> None:
-        progress.total = total_pages if total_pages and total_pages >= page else None
+        progress.total = total_pages
         progress.update(page, f"{stocks} stocks read")
 
-    rows, error = boursorama.fetch(cfg.boursorama, on_page=on_page)
-    progress.done()
+    rows = []
+    try:
+        rows, error = boursorama.fetch(cfg.boursorama, on_page=on_page)
+    finally:
+        progress.done(f"{len(rows)} stocks read")
     print(f"Boursorama: {len(rows)} stocks read")
     if error:
         print(f"Warning: crawl stopped early ({error}); saving the pages already read.")
@@ -122,8 +125,10 @@ def cmd_backfill_history(args) -> int:
     if args.limit:
         companies = companies[: args.limit]
     progress = Progress("Yahoo history", total=len(companies))
-    summary = history.backfill(conn, companies, args.period, on_company=lambda i, name: progress.update(i, name))
-    progress.done()
+    try:
+        summary = history.backfill(conn, companies, args.period, on_company=progress.update)
+    finally:
+        progress.done(f"{len(companies)} companies processed")
     found = sum(1 for n in summary.values() if n)
     print(f"Yahoo history: {found}/{len(summary)} companies with data")
     return 0

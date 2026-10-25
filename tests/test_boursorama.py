@@ -119,7 +119,8 @@ def test_repeated_share_ignores_stocks_without_trade(conn):
 
 
 def test_fetch_reports_progress_and_last_page():
-    page = PAGE.replace("</table>", '</table><a href="/bourse/actions/cotations/page-2?x">2</a>')
+    pagination = '<a href="/bourse/actions/cotations/page-2?quotation_az_filter%5Bmarket%5D=PEAPME">2</a>'
+    page = PAGE.replace("</table>", "</table>" + pagination)
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=page)))
     seen = []
     boursorama.fetch(
@@ -131,5 +132,22 @@ def test_fetch_reports_progress_and_last_page():
 
 
 def test_last_page():
-    assert boursorama.last_page('<a href="/x/page-2?f">2</a><a href="/x/page-29?f">29</a>') == 29
+    html = (
+        '<a href="/cotations/page-2?quotation_az_filter%5Bmarket%5D=PEAPME">2</a>'
+        '<a href="/cotations/page-29?quotation_az_filter%5Bmarket%5D=PEAPME">29</a>'
+        '<a href="/bourse/actualites/page-120">news</a>'  # other listings do not count
+    )
+    assert boursorama.last_page(html) == 29
     assert boursorama.last_page("<p>no pagination</p>") is None
+
+
+def test_last_page_capped_at_max_pages():
+    pagination = '<a href="/c/page-80?quotation_az_filter%5Bmarket%5D=PEAPME">80</a>'
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=PAGE + pagination)))
+    seen = []
+    boursorama.fetch(
+        {"url": "https://example.test/c/", "market_filter": "PEAPME", "max_pages": 60, "pause_seconds": 0},
+        client,
+        on_page=lambda *args: seen.append(args),
+    )
+    assert seen == [(1, 3, 60)]

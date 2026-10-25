@@ -17,7 +17,8 @@ import httpx
 from bs4 import BeautifulSoup
 
 CODE_RE = re.compile(r"/cours/([^/?#]+)/?")
-PAGE_LINK_RE = re.compile(r"/page-(\d+)")
+# Only pagination links of the quotes list carry the market filter: other "/page-N" links are ignored.
+PAGE_LINK_RE = re.compile(r"/page-(\d+)\?[^\"'\s>]*quotation_az_filter")
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) advisor-watch/0.1",
     "Accept-Language": "fr-FR,fr;q=0.9",
@@ -108,7 +109,8 @@ def fetch(
     error = None
     total_pages = None
     try:
-        for page in range(1, int(config.get("max_pages", 60)) + 1):
+        max_pages = int(config.get("max_pages", 60))
+        for page in range(1, max_pages + 1):
             try:
                 response = client.get(page_url(config["url"], config["market_filter"], page))
                 response.raise_for_status()
@@ -119,6 +121,8 @@ def fetch(
                 break
             if page == 1:
                 total_pages = last_page(response.text)
+                if total_pages:
+                    total_pages = min(total_pages, max_pages)
             new_rows = [r for r in parse(response.text) if r.code not in seen]
             if not new_rows:
                 break

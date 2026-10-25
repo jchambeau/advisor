@@ -6,7 +6,9 @@ snapshots, which take precedence for the same session.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import warnings
 from collections.abc import Callable
 
 from .liquidity import default_currency
@@ -17,6 +19,11 @@ def _yfinance():
         import yfinance
     except ImportError as exc:  # optional dependency
         raise SystemExit("yfinance is not installed: pip install -e '.[history]'") from exc
+    # Unresolved tickers are expected (ISIN fallback) and counted in the summary: keep yfinance quiet.
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    # yfinance's own pandas calls raise deprecation warnings we cannot act on (e.g. Pandas4Warning
+    # about `inplace=` with pandas 3.1); our own code is not affected by this filter.
+    warnings.filterwarnings("ignore", category=Warning, module=r"yfinance(\.|$)")
     return yfinance
 
 
