@@ -118,7 +118,7 @@ advisor collect         # vault Inbox, RSS feeds, stock news pages, then article
 ```
 
 `advisor collect` gathers articles into the database without calling any language model
-(signal extraction is the next step). In order, it:
+(signal extraction is described below). In order, it:
 
 1. takes the notes you dropped in `vault/Inbox/` (see below) and the articles you completed
    or withdrew in `vault/Inbox/To-complete/`;
@@ -153,6 +153,43 @@ never skipped for their age.
 
 `advisor daily` now runs the collection after the liquidity update. Collecting reads other
 sites' pages: check that their terms of use allow it before scheduling it.
+
+### Signal extraction
+
+```bash
+export ANTHROPIC_API_KEY=...    # from console.anthropic.com
+advisor extract --dry-run       # what would be analysed, and the estimated cost
+advisor extract [--limit N]     # analyse the ready articles, newest first
+```
+
+Each ready article (paywalled ones only once you completed them) is sent to Claude Haiku 5.5
+with the companies it was linked to and the list of macro factors from `config.yaml`. The
+model returns signals as JSON: a target (a company of the universe, a sector or a macro
+factor), a type (results, guidance, orders and contracts, financing, prices and margins...),
+a direction, an intensity from 1 to 3, a confidence, and the quote that supports it.
+
+- A signal is kept only if its quote is found word for word in the article, and its company
+  is one the article was linked to: an invented fact or company is dropped.
+- The article text is passed as data; the model is told never to follow instructions in it.
+- One note per article in `vault/Sources/` (summary and signals), and a "Signals today"
+  section in the digest of the day. Anything you write outside the `<!-- ... -->` blocks of
+  these notes is kept.
+- Spending is recorded per article (`advisor status` shows the total); the run stops at
+  `daily_budget_usd`. With `effort: low`, an article costs a fraction of a cent.
+- An answer that cannot be used marks the article `extraction_failed`; it is retried on the
+  next runs, up to 3 times. A refused key, a rate limit or an API outage stops the run and
+  leaves the articles for the next one.
+
+`advisor daily` runs the extraction last, when `ANTHROPIC_API_KEY` is set. For the systemd
+timer, put the key in `~/.config/advisor/env`:
+
+```bash
+mkdir -p ~/.config/advisor
+printf 'ANTHROPIC_API_KEY=%s\n' 'sk-ant-...' > ~/.config/advisor/env
+chmod 600 ~/.config/advisor/env
+```
+
+The signals describe what articles say; they are not investment advice.
 
 ## Tests
 

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import date
 from pathlib import Path
 
-from . import boursorama, collect, documents, euronext, history, liquidity, mappings, overrides, sources, vault
+import anthropic
+
+from . import (boursorama, collect, documents, euronext, history, liquidity, mappings, overrides, signals,
+               sources, vault)
 from .config import load
 from .db import connect
 from .progress import Progress
@@ -293,8 +297,44 @@ def cmd_sources_check(args) -> int:
     return 1 if failures else 0
 
 
+def cmd_extract(args) -> int:
+    cfg, conn = _context(args)
+    today = date.today()
+    llm = cfg.llm
+    limit = min(args.limit or 10**9, int(llm["max_documents_per_run"]))
+    if args.dry_run:
+        docs = signals.to_extract(conn, limit)
+        chars = sum(min(len(d["text"] or ""), int(llm["max_text_chars"])) for d in docs)
+        tokens = chars // 3 + 1500 * len(docs)  # rough: ~3 characters a token, plus prompt and schema
+        print(f"{len(docs)} articles would be analysed with {llm['model']}, about {tokens:,} input tokens, "
+              f"about {signals.cost(llm, tokens, 600 * len(docs)):.3f} USD.")
+        for doc in docs[:20]:
+            print(f"  {doc['id']}: {doc['title'] or doc['url']}")
+        return 0
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ANTHROPIC_API_KEY is not set: signal extraction skipped (see the README).")
+        return 0 if args.command == "daily" else 1
+    waiting = len(signals.to_extract(conn, limit))
+    progress = Progress("Analysis", total=waiting, every=10)
+    with anthropic.Anthropic(max_retries=3) as client:
+        try:
+            run = signals.run(conn, llm, client, today, limit=args.limit, on_doc=progress.update)
+        finally:
+            progress.done()
+    for doc_id in run.touched:
+        doc = conn.execute("SELECT * FROM document WHERE id = ?", (doc_id,)).fetchone()
+        vault.write_source(cfg.vault, doc, signals.source_lines(conn, doc))
+    path = vault.write_digest(cfg.vault, today, signals.digest_lines(conn, today, run), block="signals")
+    print(f"Analysed: {run.extracted} articles, {run.signals} signals ({run.dropped} dropped), "
+          f"{run.failed} failed, about {run.cost_usd:.3f} USD")
+    if run.stopped:
+        print(f"Stopped early: {run.stopped}")
+    print(f"Digest: {path}")
+    return 1 if run.stopped and not run.stopped.startswith("daily budget") else 0
+
+
 def cmd_daily(args) -> int:
-    """Evening run: volume snapshot, liquidity update, then news collection."""
+    """Evening run: volume snapshot, liquidity update, news collection, then signal extraction."""
     try:
         fetched = cmd_fetch_volumes(args)
     except Exception as exc:  # network error, bad mappings.csv...: still refresh liquidity
@@ -306,7 +346,13 @@ def cmd_daily(args) -> int:
     except Exception as exc:
         print(f"News collection failed: {exc!r}")
         collected = 1
-    return fetched or computed or collected
+    args.limit, args.dry_run = None, False
+    try:
+        extracted = cmd_extract(args)
+    except Exception as exc:
+        print(f"Signal extraction failed: {exc!r}")
+        extracted = 1
+    return fetched or computed or collected or extracted
 
 
 def cmd_status(args) -> int:
@@ -326,6 +372,10 @@ def cmd_status(args) -> int:
             print(f"  {row['status']}: {row['n']} (computed on {r['d']})")
     counts = conn.execute("SELECT status, COUNT(*) AS n FROM document GROUP BY status ORDER BY status").fetchall()
     print("Documents: " + (", ".join(f"{c['status']} {c['n']}" for c in counts) or "none"))
+    r = conn.execute("SELECT COUNT(*) AS n FROM signal").fetchone()
+    spent = conn.execute("SELECT COALESCE(SUM(cost_usd), 0) AS c, MIN(day) AS since FROM llm_usage").fetchone()
+    print(f"Signals: {r['n']}" + (f" (language model: {spent['c']:.2f} USD since {spent['since']})"
+                                    if spent["since"] else ""))
     return 0
 
 
@@ -368,7 +418,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sources-check", help="test every feed of sources.yaml")
     s.set_defaults(func=cmd_sources_check)
 
-    s = sub.add_parser("daily", help="evening run: Boursorama volumes, liquidity, then news collection")
+    s = sub.add_parser("extract", help="analyse the ready articles with the language model (signals)")
+    s.add_argument("--limit", type=int, help="analyse at most N articles")
+    s.add_argument("--dry-run", action="store_true", help="show what would be analysed and its cost, call nothing")
+    s.set_defaults(func=cmd_extract)
+
+    s = sub.add_parser("daily", help="evening run: volumes, liquidity, news collection, signal extraction")
     s.add_argument("--date", help="session date (YYYY-MM-DD), default: today")
     s.add_argument("--force", action="store_true", help="see fetch-volumes")
     s.add_argument("--no-news-pages", action="store_true", help="see collect")

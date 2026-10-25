@@ -245,7 +245,7 @@ def digest_lines(conn: sqlite3.Connection, today: date, summary: Summary) -> lis
     if pending:
         lines.append("Paste the text, or set `action: withdraw`, in each note:")
         for doc in pending:
-            lines.append(f"- [[Inbox/To-complete/{vault.pending_name(doc)}|{_md(doc['title'] or doc['url'])}]]"
+            lines.append(f"- [[Inbox/To-complete/{vault.pending_name(doc)}|{vault.md_text(doc['title'] or doc['url'])}]]"
                          f" ({doc['source']}, {doc['note']})")
     else:
         lines.append("Nothing to complete.")
@@ -255,30 +255,20 @@ def digest_lines(conn: sqlite3.Connection, today: date, summary: Summary) -> lis
         FROM document d
         LEFT JOIN document_company dc ON dc.document_id = d.id
         LEFT JOIN company c ON c.isin = dc.isin
-        WHERE d.ready_on = ? AND d.status = 'ready'
+        WHERE d.ready_on = ? AND d.status IN ('ready', 'extracted', 'extraction_failed')
         GROUP BY d.id ORDER BY companies IS NULL, companies, d.published_on DESC
         """,
         (today.isoformat(),),
     ).fetchall()
     lines += ["", f"## Ready for analysis today ({len(new)})", ""]
     for doc in new:
-        who = f"**{_md(doc['companies'])}**: " if doc["companies"] else ""
-        lines.append(f"- {who}[{_md(doc['title'] or doc['url'])}]({_url(doc['url'])}) ({doc['source']})")
+        who = f"**{vault.md_text(doc['companies'])}**: " if doc["companies"] else ""
+        lines.append(f"- {who}[{vault.md_text(doc['title'] or doc['url'])}]({vault.md_url(doc['url'])}) ({doc['source']})")
     if not new:
         lines.append("No new article ready for analysis.")
     failed = conn.execute("SELECT COUNT(*) AS n FROM document WHERE status = 'fetch_failed'").fetchone()["n"]
     problems = summary.problems + ([f"{failed} articles could not be fetched (retried up to {MAX_ATTEMPTS} times)"]
                                    if failed else [])
     if problems:
-        lines += ["", "## Problems", ""] + [f"- {_md(p)}" for p in problems]
+        lines += ["", "## Problems", ""] + [f"- {vault.md_text(p)}" for p in problems]
     return lines
-
-
-def _md(text: str) -> str:
-    """Keep external text from breaking the note's links and lists."""
-    text = str(text).replace("<!--", "").replace("-->", "")
-    return " ".join(text.replace("[", "(").replace("]", ")").replace("|", "/").split())
-
-
-def _url(url: str) -> str:
-    return url.replace(" ", "%20").replace("(", "%28").replace(")", "%29").replace("<", "%3C").replace(">", "%3E")

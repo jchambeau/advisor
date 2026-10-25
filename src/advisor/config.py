@@ -58,6 +58,32 @@ DEFAULTS = {
             "liquid_only": True,
         },
     },
+    "llm": {
+        "model": "claude-haiku-5-5",
+        "effort": "low",
+        "max_tokens": 8000,
+        "max_documents_per_run": 150,
+        "max_text_chars": 30000,
+        "daily_budget_usd": 0.50,
+        "price_input_per_mtok": 0.10,
+        "price_output_per_mtok": 0.50,
+        "factors": {
+            "inflation": "consumer and producer prices",
+            "interest_rates": "central bank rates, bond yields",
+            "growth": "GDP, recession risk, business surveys",
+            "consumer_demand": "household spending and confidence",
+            "energy_oil": "oil, gas and power prices and supply",
+            "commodities": "metals, agricultural and other raw materials",
+            "geopolitics_war": "wars, sanctions, trade conflicts and tariffs",
+            "artificial_intelligence": "AI adoption, investment and disruption",
+            "credit_financing": "bank lending, credit spreads, access to equity",
+            "currency": "euro exchange rate",
+            "public_spending": "government budgets, defence, subsidies",
+            "regulation": "laws and rules affecting companies",
+            "labour_market": "employment and wages",
+            "supply_chain": "shortages, logistics, delays",
+        },
+    },
 }
 
 
@@ -85,6 +111,7 @@ class Config:
     vault: Path | None = None
     sources: Path | None = None
     collect: dict = field(default_factory=dict)
+    llm: dict = field(default_factory=dict)
 
 
 def _merge(defaults: dict, values: dict) -> dict:
@@ -127,4 +154,5 @@ def load(path: str | Path | None = None) -> Config:
         vault=resolve(paths["vault"]),
         sources=resolve(paths["sources"]),
         collect=data["collect"],
+        llm=data["llm"],
     )

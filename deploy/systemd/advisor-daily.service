@@ -1,10 +1,13 @@
 [Unit]
-Description=Advisor evening run (Boursorama volumes, liquidity, news collection)
+Description=Advisor evening run (Boursorama volumes, liquidity, news collection, signal extraction)
 
 [Service]
 Type=oneshot
 # Session dates are taken in Paris time, whatever the machine's timezone.
 Environment=TZ=Europe/Paris
+# ANTHROPIC_API_KEY=... for the signal extraction (file readable by you only: chmod 600).
+# Without it, `advisor daily` skips the extraction.
+EnvironmentFile=-%h/.config/advisor/env
 # Assumes the repository is cloned in ~/advisor with its virtualenv in ~/advisor/.venv.
 WorkingDirectory=%h/advisor
 ExecStart=%h/advisor/.venv/bin/advisor daily
