@@ -108,3 +108,37 @@ def test_daily_still_computes_liquidity_when_fetch_fails(tmp_path, capsys, monke
     assert main(["--config", config, "daily"]) == 1
     out = capsys.readouterr().out
     assert "Volume fetch failed" in out and "Liquidity on 2026-10-26" in out
+
+
+def test_fetch_volumes_matches_through_stock_pages(tmp_path, capsys, monkeypatch):
+    from datetime import date as real_date
+
+    from advisor import boursorama, cli
+
+    (tmp_path / "config.yaml").write_text("paths:\n  database: data/test.db\n", encoding="utf-8")
+    config = str(tmp_path / "config.yaml")
+    file = write_list(tmp_path / "list.xlsx", [
+        ("ADUX", "FR0012821890", "Euronext Growth Paris", "Euronext Growth", "France"),
+    ])
+    assert main(["--config", config, "import-list", str(file), "--yes"]) == 0
+
+    class Monday(real_date):
+        @classmethod
+        def today(cls):
+            return real_date(2026, 10, 26)
+
+    rows = [boursorama.Row("1rPALDUX", "ADUX (EX HI-MEDIA)", 1.5, 2000.0)]
+    looked_up = []
+
+    def look_up(_config, codes):
+        looked_up.extend(codes)
+        yield "1rPALDUX", "FR0012821890"
+
+    monkeypatch.setattr(boursorama, "fetch", lambda _config, on_page=None: (rows, None))
+    monkeypatch.setattr(boursorama, "look_up_isins", look_up)
+    monkeypatch.setattr(boursorama.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cli, "date", Monday)
+    assert main(["--config", config, "fetch-volumes"]) == 0
+    assert "saved for 1 companies" in capsys.readouterr().out
+    assert main(["--config", config, "fetch-volumes", "--force"]) == 0
+    assert looked_up == ["1rPALDUX"]  # read once, then known

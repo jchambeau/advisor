@@ -30,6 +30,8 @@ DEFAULTS = {
         "market_filter": "PEAPME",
         "max_pages": 60,
         "pause_seconds": 2.0,
+        "max_isin_lookups": 200,
+        "isin_lookup_retry_days": 30,
     },
 }
 

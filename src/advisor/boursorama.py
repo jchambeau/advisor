@@ -9,16 +9,20 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date
+from urllib.parse import quote, urljoin
 
 import httpx
 from bs4 import BeautifulSoup
 
+from .euronext import is_valid_isin
+
 CODE_RE = re.compile(r"/cours/([^/?#]+)/?")
 # Only pagination links of the quotes list carry the market filter: other "/page-N" links are ignored.
 PAGE_LINK_RE = re.compile(r"/page-(\d+)\?[^\"'\s>]*quotation_az_filter")
+ISIN_TEXT_RE = re.compile(r"\b[A-Z]{2}[A-Z0-9]{9}[0-9]\b")
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) advisor-watch/0.1",
     "Accept-Language": "fr-FR,fr;q=0.9",
@@ -134,6 +138,58 @@ def fetch(
         if owned:
             client.close()
     return list(seen.values()), error
+
+
+def page_isin(html: str) -> str | None:
+    """The stock's own ISIN: the first valid one in the visible text (the quote header shows it
+    next to the ticker, above any block about other stocks)."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return next((i for i in ISIN_TEXT_RE.findall(soup.get_text(" ")) if is_valid_isin(i)), None)
+
+
+def stock_url(base: str, code: str) -> str:
+    return urljoin(base, f"/cours/{quote(code, safe='')}/")
+
+
+def look_up_isins(
+    config: dict,
+    codes: list[str],
+    client: httpx.Client | None = None,
+    max_failures: int = 3,
+) -> Iterator[tuple[str, str | None]]:
+    """Read each stock's own page, which shows its ISIN, for codes the name match missed.
+
+    Yields (code, ISIN shown on the page or None) as pages are read, so a caller can keep what
+    was read if the run stops. A missing page (404, 410) yields None; other failures yield
+    nothing, so the code is tried again later, and `max_failures` of them in a row stop the
+    walk (site down or blocking).
+    """
+    owned = client is None
+    client = client or httpx.Client(headers=HTTP_HEADERS, timeout=10, follow_redirects=True)
+    failures = 0
+    try:
+        for i, code in enumerate(codes):
+            if i:
+                time.sleep(float(config.get("pause_seconds", 2.0)))
+            try:
+                response = client.get(stock_url(config["url"], code))
+            except httpx.HTTPError:
+                response = None
+            if response is not None and response.status_code in (404, 410):
+                failures = 0
+                yield code, None
+            elif response is None or response.is_error:
+                failures += 1
+                if failures >= max_failures:
+                    return
+            else:
+                failures = 0
+                yield code, page_isin(response.text)
+    finally:
+        if owned:
+            client.close()
 
 
 def repeated_share(conn: sqlite3.Connection, rows: list[Row], isin_by_code: dict[str, str], day: date) -> float | None:

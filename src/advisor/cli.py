@@ -111,11 +111,41 @@ def cmd_fetch_volumes(args) -> int:
         r["isin"]: liquidity.default_currency(r["market"]) for r in conn.execute("SELECT isin, market FROM company")
     }
     n = boursorama.save(conn, rows, codes, currency_by_isin, day)
+    if unmatched:
+        # After the session is saved, so a slow or failing lookup never costs the day's volumes.
+        try:
+            _look_up_on_pages(cfg, conn, companies, [c for c, _ in unmatched])
+        except Exception as exc:
+            print(f"Warning: ISIN lookup on stock pages failed: {exc!r}")
+        codes = mappings.isin_by_code(conn)
+        unmatched = [(c, nm) for c, nm in unmatched if c not in codes]
+        n = boursorama.save(conn, rows, codes, currency_by_isin, day)
     print(f"Session of {day} saved for {n} companies")
     if unmatched:
         path = mappings.export_unmatched(cfg.exports / "unmatched_boursorama.csv", unmatched)
         print(f"{len(unmatched)} stocks not matched: see {path} and complete {cfg.mappings.name}")
     return 0
+
+
+def _look_up_on_pages(cfg, conn, companies, unmatched_codes: list[str]) -> None:
+    """Read the ISIN on the own page of stocks the name match missed."""
+    today = date.today()
+    to_check = mappings.codes_to_look_up(conn, unmatched_codes, today, int(cfg.boursorama["isin_lookup_retry_days"]))
+    to_check = to_check[: int(cfg.boursorama["max_isin_lookups"])]
+    if to_check:
+        known = {c["isin"] for c in companies}
+        progress = Progress("ISIN lookups", total=len(to_check), every=20)
+        read = found = 0
+        try:
+            for code, isin in boursorama.look_up_isins(cfg.boursorama, to_check):
+                # Recorded one by one, so an interrupted run keeps the pages already read.
+                mappings.record_lookup(conn, code, isin if isin in known else None, today)
+                read += 1
+                found += isin in known
+                progress.update(read, code)
+        finally:
+            progress.done(f"{found} of {read} pages read show a listed ISIN")
+    mappings.save_page_matches(conn, mappings.matches_from_lookups(conn, companies, unmatched_codes))
 
 
 def cmd_backfill_history(args) -> int:
