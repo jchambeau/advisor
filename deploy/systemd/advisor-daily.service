@@ -1,0 +1,10 @@
+[Unit]
+Description=Advisor evening run (Boursorama volumes, then liquidity)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Assumes the repository is cloned in ~/advisor with its virtualenv in ~/advisor/.venv.
+WorkingDirectory=%h/advisor
+ExecStart=%h/advisor/.venv/bin/advisor daily

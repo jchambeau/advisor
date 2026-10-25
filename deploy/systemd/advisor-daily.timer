@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Advisor evening job after the Euronext close
+
+[Timer]
+# Euronext closes at 17:30 Paris time; leave time for the page to show final figures.
+OnCalendar=Mon..Fri 19:00 Europe/Paris
+# No catch-up after a missed evening: a morning run would save yesterday's figures under today's date.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

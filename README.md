@@ -9,10 +9,12 @@ Obsidian notes and sector scenarios at 3 months, 1 year and 5 years.
 Version 1 runs locally. Every path and setting lives in `config.yaml` (required: the tool
 stops if it cannot find it), so the tool can move to a VPS later without code changes.
 
-## Setup
+## Setup (Fedora)
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+sudo dnf install -y python3 python3-pip git
+git clone https://github.com/jchambeau/advisor ~/advisor && cd ~/advisor
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,history]"
 cp config.example.yaml config.yaml
 cp overrides.example.yaml overrides.yaml
@@ -77,7 +79,21 @@ advisor daily     # Boursorama volumes, then liquidity
 advisor status    # database summary
 ```
 
-Schedule it every trading evening (local task scheduler, or `cron` / a `systemd` timer on a VPS).
+Schedule it every trading evening with the systemd user timer in `deploy/systemd/`
+(Fedora has no cron by default; the same units work on a VPS):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/advisor-daily.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now advisor-daily.timer
+systemctl --user list-timers advisor-daily.timer   # next run
+journalctl --user -u advisor-daily.service         # output of past runs
+```
+
+The timer runs Monday to Friday at 19:00 Paris time. It only fires while your user session
+is open; to run it when you are logged out, enable lingering once with
+`sudo loginctl enable-linger $USER`. The units assume the repository lives in `~/advisor`.
 
 ## Tests
 

@@ -8,10 +8,10 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    # The tool runs on Fedora: test in the same distribution.
+    container: fedora:latest
     steps:
+      - run: dnf install -y python3 python3-pip git
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e ".[dev]"
-      - run: pytest -q
+      - run: python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+      - run: .venv/bin/pytest -q
