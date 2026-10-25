@@ -41,6 +41,36 @@ CREATE TABLE IF NOT EXISTS stock_page_isin (
     checked_on      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS document (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    url          TEXT NOT NULL UNIQUE,  -- canonical URL (no fragment, no tracking parameters)
+    title_key    TEXT,                  -- normalized title, to spot one story under another URL
+    source       TEXT NOT NULL,         -- feed name from sources.yaml, 'boursorama' or 'manual'
+    title        TEXT,
+    summary      TEXT,
+    text         TEXT,
+    published_on TEXT,                  -- publication date, places the document in the history
+    added_on     TEXT NOT NULL,         -- date it entered the database
+    ready_on     TEXT,                  -- date its text became available for analysis
+    status       TEXT NOT NULL,         -- new, ready, pending, withdrawn, too_old, fetch_failed
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    note         TEXT                   -- why pending or failed
+);
+CREATE INDEX IF NOT EXISTS document_title_key ON document (title_key);
+CREATE INDEX IF NOT EXISTS document_status ON document (status);
+
+CREATE TABLE IF NOT EXISTS document_company (
+    document_id INTEGER NOT NULL REFERENCES document (id),
+    isin        TEXT NOT NULL,
+    how         TEXT NOT NULL,          -- 'page' (stock news page), 'name' (name found in the text)
+    PRIMARY KEY (document_id, isin)
+);
+
+CREATE TABLE IF NOT EXISTS news_page_visit (
+    boursorama_code TEXT PRIMARY KEY,
+    visited_on      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS daily_volume (
     isin      TEXT NOT NULL,
     date      TEXT NOT NULL,

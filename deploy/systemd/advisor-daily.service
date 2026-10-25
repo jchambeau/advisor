@@ -1,5 +1,5 @@
 [Unit]
-Description=Advisor evening run (Boursorama volumes, then liquidity)
+Description=Advisor evening run (Boursorama volumes, liquidity, news collection)
 
 [Service]
 Type=oneshot
@@ -8,4 +8,4 @@ Environment=TZ=Europe/Paris
 # Assumes the repository is cloned in ~/advisor with its virtualenv in ~/advisor/.venv.
 WorkingDirectory=%h/advisor
 ExecStart=%h/advisor/.venv/bin/advisor daily
-TimeoutStartSec=30min
+TimeoutStartSec=60min

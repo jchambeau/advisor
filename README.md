@@ -18,6 +18,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,history]"
 cp config.example.yaml config.yaml
 cp overrides.example.yaml overrides.yaml
+cp sources.example.yaml sources.yaml
 ```
 
 ## Step 1: universe and liquidity
@@ -88,7 +89,7 @@ in a currency missing from `currencies`; the export says why. Every threshold is
 ### Daily run
 
 ```bash
-advisor daily     # Boursorama volumes, then liquidity
+advisor daily     # Boursorama volumes, liquidity, then news collection
 advisor status    # database summary
 ```
 
@@ -108,6 +109,50 @@ The timer runs Monday to Friday at 19:00 Paris time, and again at 22:00 to catch
 when the machine was asleep or offline (the second run only rewrites the same session). It only fires while your user session
 is open; to run it when you are logged out, enable lingering once with
 `sudo loginctl enable-linger $USER`. The units assume the repository lives in `~/advisor`.
+
+## Step 2: news collection
+
+```bash
+advisor sources-check   # test every feed of sources.yaml (do this first)
+advisor collect         # vault Inbox, RSS feeds, stock news pages, then article texts
+```
+
+`advisor collect` gathers articles into the database without calling any language model
+(signal extraction is the next step). In order, it:
+
+1. takes the notes you dropped in `vault/Inbox/` (see below) and the articles you completed
+   or withdrew in `vault/Inbox/To-complete/`;
+2. reads the RSS feeds listed in `sources.yaml` (articles older than `max_age_days` are skipped);
+3. reads the Boursorama news page of the stocks of the liquid universe, a share of them per run
+   (`pages_per_run`), the least recently visited first; a first visit only takes the latest items;
+4. fetches each new article and extracts its text; the text is never treated as instructions;
+5. links articles to companies: those found on a stock's news page, and those whose name
+   appears in the text;
+6. writes the digest of the day in `vault/Journal/<date>.md`.
+
+Duplicates are detected by URL (tracking parameters removed) and by title within a few days.
+
+**Paywalled articles.** When the text looks incomplete (too short for a feed article, a marker
+such as "réservé aux abonnés", or access refused), the article is not analysed. A note is
+written in `vault/Inbox/To-complete/` and listed at the top of the digest. Either paste the
+text under its `## Text` heading, or set `action: withdraw` in its properties; the next run
+takes it into account and moves the note to `Inbox/Done/`. A feed with `on_paywall: summary` in
+`sources.yaml` skips this and keeps the feed summary instead.
+
+**Articles you find yourself** follow the same path, with three ways in:
+
+- a note in `vault/Inbox/` with the URL in its properties (`url:`, or `source:` as the Obsidian
+  Web Clipper writes it) or on its first line, and the article text as body if you have it
+  (clipped or pasted: then the page is not fetched); an optional `published:` date;
+- `advisor add <url> [--date YYYY-MM-DD]`;
+- `advisor add --file urls.txt`, one URL per line, optionally followed by a date, to catch up
+  on history at once.
+
+Each document keeps its publication date and the date it was added. Old articles you add are
+never skipped for their age.
+
+`advisor daily` now runs the collection after the liquidity update. Collecting reads other
+sites' pages: check that their terms of use allow it before scheduling it.
 
 ## Tests
 

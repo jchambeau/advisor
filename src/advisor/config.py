@@ -15,6 +15,8 @@ DEFAULTS = {
         "overrides": "overrides.yaml",
         "mappings": "mappings.csv",
         "exports": "data/exports",
+        "vault": "vault",
+        "sources": "sources.yaml",
     },
     "liquidity": {
         "window_sessions": 63,
@@ -32,6 +34,29 @@ DEFAULTS = {
         "pause_seconds": 2.0,
         "max_isin_lookups": 200,
         "isin_lookup_retry_days": 30,
+    },
+    "collect": {
+        "pause_seconds": 1.0,
+        "timeout_seconds": 20,
+        "max_response_bytes": 5_000_000,
+        "max_article_fetches": 300,
+        "max_age_days": 30,
+        "min_text_chars": 800,
+        "paywall_markers": [
+            "réservé aux abonnés",
+            "article réservé",
+            "contenu réservé",
+            "abonnez-vous pour lire",
+            "pour lire la suite",
+            "déjà abonné",
+        ],
+        "boursorama_news": {
+            "enabled": True,
+            "url": "https://www.boursorama.com/cours/actualites/{code}/",
+            "pages_per_run": 150,
+            "first_visit_items": 5,
+            "liquid_only": True,
+        },
     },
 }
 
@@ -57,6 +82,9 @@ class Config:
     liquidity: LiquidityRules
     currencies: dict[str, float] = field(default_factory=dict)
     boursorama: dict = field(default_factory=dict)
+    vault: Path | None = None
+    sources: Path | None = None
+    collect: dict = field(default_factory=dict)
 
 
 def _merge(defaults: dict, values: dict) -> dict:
@@ -96,4 +124,7 @@ def load(path: str | Path | None = None) -> Config:
         liquidity=LiquidityRules(**data["liquidity"]),
         currencies={k: float(v) for k, v in data["currencies"].items()},
         boursorama=data["boursorama"],
+        vault=resolve(paths["vault"]),
+        sources=resolve(paths["sources"]),
+        collect=data["collect"],
     )

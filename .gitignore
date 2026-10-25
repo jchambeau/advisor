@@ -8,5 +8,7 @@ __pycache__/
 config.yaml
 overrides.yaml
 mappings.csv
+sources.yaml
+vault/
 .env
 data/
