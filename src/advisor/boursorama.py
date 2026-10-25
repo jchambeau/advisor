@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
@@ -16,6 +17,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 CODE_RE = re.compile(r"/cours/([^/?#]+)/?")
+PAGE_LINK_RE = re.compile(r"/page-(\d+)")
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) advisor-watch/0.1",
     "Accept-Language": "fr-FR,fr;q=0.9",
@@ -76,22 +78,35 @@ def parse(html: str) -> list[Row]:
     return []
 
 
+def last_page(html: str) -> int | None:
+    """Highest page number linked from the pagination, if any (used for progress only)."""
+    numbers = [int(n) for n in PAGE_LINK_RE.findall(html)]
+    return max(numbers) if numbers else None
+
+
 def page_url(base: str, market_filter: str, page: int) -> str:
     base = base.rstrip("/") + "/"
     path = base if page == 1 else f"{base}page-{page}"
     return f"{path}?quotation_az_filter%5Bmarket%5D={market_filter}"
 
 
-def fetch(config: dict, client: httpx.Client | None = None) -> tuple[list[Row], str | None]:
+def fetch(
+    config: dict,
+    client: httpx.Client | None = None,
+    on_page: Callable[[int, int, int | None], None] | None = None,
+) -> tuple[list[Row], str | None]:
     """Walk the pages until one of them brings no new stock.
 
     Returns the rows and, when a later page failed, the error that stopped the crawl
     (the rows already read are kept). A failure on the first page raises.
+    `on_page(page, stocks_so_far, last_page)` is called after each page read; `last_page`
+    comes from the first page's pagination links and may be None.
     """
     owned = client is None
     client = client or httpx.Client(headers=HTTP_HEADERS, timeout=30, follow_redirects=True)
     seen: dict[str, Row] = {}
     error = None
+    total_pages = None
     try:
         for page in range(1, int(config.get("max_pages", 60)) + 1):
             try:
@@ -102,10 +117,14 @@ def fetch(config: dict, client: httpx.Client | None = None) -> tuple[list[Row], 
                     raise
                 error = f"page {page}: {exc}"
                 break
+            if page == 1:
+                total_pages = last_page(response.text)
             new_rows = [r for r in parse(response.text) if r.code not in seen]
             if not new_rows:
                 break
             seen.update({r.code: r for r in new_rows})
+            if on_page:
+                on_page(page, len(seen), total_pages)
             time.sleep(float(config.get("pause_seconds", 2.0)))
     finally:
         if owned:

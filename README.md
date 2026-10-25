@@ -50,6 +50,10 @@ with a reason. These choices are kept from one import to the next.
 - `advisor backfill-history` seeds 6 months of history through yfinance, until enough
   Boursorama snapshots exist. For the same session, Boursorama takes precedence.
 
+Both commands show their progress on stderr (page X/N, or company X/N with an estimate of the
+time left); on a terminal the line updates in place, in the systemd journal a line is written
+every few steps.
+
 Boursorama does not show the ISIN, so stocks are matched by name. Unmatched stocks are listed
 in `data/exports/unmatched_boursorama.csv`; copy them into `mappings.csv`
 (`isin;boursorama_code;yahoo_ticker`), which always wins over the automatic match.

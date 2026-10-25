@@ -116,3 +116,20 @@ def test_repeated_share_ignores_stocks_without_trade(conn):
     boursorama.save(conn, rows, codes, {}, date(2026, 10, 23))
     rows[0].volume += 1
     assert boursorama.repeated_share(conn, rows, codes, date(2026, 10, 24)) == 0.0
+
+
+def test_fetch_reports_progress_and_last_page():
+    page = PAGE.replace("</table>", '</table><a href="/bourse/actions/cotations/page-2?x">2</a>')
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=page)))
+    seen = []
+    boursorama.fetch(
+        {"url": "https://example.test/cotations/", "market_filter": "PEAPME", "pause_seconds": 0},
+        client,
+        on_page=lambda *args: seen.append(args),
+    )
+    assert seen == [(1, 3, 2)]  # page 2 brought nothing new, so no callback for it
+
+
+def test_last_page():
+    assert boursorama.last_page('<a href="/x/page-2?f">2</a><a href="/x/page-29?f">29</a>') == 29
+    assert boursorama.last_page("<p>no pagination</p>") is None

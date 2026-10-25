@@ -10,6 +10,7 @@ from pathlib import Path
 from . import boursorama, euronext, history, liquidity, mappings, overrides
 from .config import load
 from .db import connect
+from .progress import Progress
 
 
 def _context(args):
@@ -79,7 +80,14 @@ def cmd_fetch_volumes(args) -> int:
         print("Empty universe: import a list first (advisor import-list).")
         return 1
 
-    rows, error = boursorama.fetch(cfg.boursorama)
+    progress = Progress("Boursorama pages", every=5)
+
+    def on_page(page: int, stocks: int, total_pages: int | None) -> None:
+        progress.total = total_pages if total_pages and total_pages >= page else None
+        progress.update(page, f"{stocks} stocks read")
+
+    rows, error = boursorama.fetch(cfg.boursorama, on_page=on_page)
+    progress.done()
     print(f"Boursorama: {len(rows)} stocks read")
     if error:
         print(f"Warning: crawl stopped early ({error}); saving the pages already read.")
@@ -113,7 +121,9 @@ def cmd_backfill_history(args) -> int:
     companies = overrides.universe(conn, overrides.load(cfg.overrides))
     if args.limit:
         companies = companies[: args.limit]
-    summary = history.backfill(conn, companies, args.period)
+    progress = Progress("Yahoo history", total=len(companies))
+    summary = history.backfill(conn, companies, args.period, on_company=lambda i, name: progress.update(i, name))
+    progress.done()
     found = sum(1 for n in summary.values() if n)
     print(f"Yahoo history: {found}/{len(summary)} companies with data")
     return 0
