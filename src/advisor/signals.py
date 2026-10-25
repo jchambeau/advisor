@@ -25,6 +25,12 @@ SIGNAL_TYPES = [
 DIRECTIONS = {"positive": 1, "negative": -1, "neutral": 0}
 CONFIDENCE = ["low", "medium", "high"]
 MAX_QUOTE = 400
+MIN_QUOTE_CHARS = 20  # "de" or "2CRSI" are found in any article: no proof at all
+MIN_QUOTE_WORDS = 3
+KINDS = ("company", "sector", "factor")
+FOLD = str.maketrans({"’": "'", "‘": "'", "‚": "'", "«": '"', "»": '"', "“": '"', "”": '"', "„": '"',
+                      "–": "-", "—": "-", "‑": "-", "…": "..."})
+ARTICLE_TAG = re.compile(r"<\s*/?\s*article\b[^>]*>", re.I)
 MAX_ATTEMPTS = 3
 
 SYSTEM_PROMPT = """You extract investment-relevant signals from one news article, for a watch of \
@@ -66,11 +72,11 @@ class Extraction:
     dropped: list[str] = field(default_factory=list)
 
 
-def output_schema(factors: list[str]) -> dict:
+def output_schema() -> dict:
     signal = {
         "type": "object",
         "properties": {
-            "target_kind": {"type": "string", "enum": ["company", "sector", "factor"]},
+            "target_kind": {"type": "string", "enum": list(KINDS)},
             "target": {"type": "string", "description": "ISIN, sector label or factor key"},
             "type": {"type": "string", "enum": SIGNAL_TYPES},
             "direction": {"type": "string", "enum": list(DIRECTIONS)},
@@ -103,21 +109,30 @@ def user_message(doc: sqlite3.Row, candidates: list[sqlite3.Row], factors: dict[
 
 
 def _no_tags(text: str) -> str:
-    # The article cannot close the <article> block early and pass the rest off as our instructions.
-    return re.sub(r"</?\s*article\s*>", "", text, flags=re.I)
+    # The article cannot close the <article> block early and pass the rest off as our instructions;
+    # repeated until stable, so that "</arti</article>cle>" does not leave a tag behind.
+    while True:
+        cleaned = ARTICLE_TAG.sub("", text)
+        if cleaned == text:
+            return cleaned
+        text = cleaned
 
 
 def _flat(text: str) -> str:
-    return " ".join(text.replace("’", "'").replace("«", '"').replace("»", '"').split()).lower()
+    return " ".join(text.translate(FOLD).split()).lower()
 
 
 def validate(raw: dict, doc: sqlite3.Row, candidates: set[str], factors: set[str]) -> Extraction:
     """Keep the signals whose target is allowed and whose quote is really in the article."""
     haystack = _flat(f"{doc['title'] or ''} {doc['text'] or ''}")
     result = Extraction(summary=str(raw.get("summary") or "").strip())
-    for item in raw.get("signals") or []:
-        kind, target = item.get("target_kind"), str(item.get("target") or "").strip()
-        quote = str(item.get("quote") or "").strip().strip('"«»“” ')
+    items = raw.get("signals")
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or item.get("target_kind") not in KINDS:
+            result.dropped.append(f"malformed signal: {str(item)[:60]!r}")
+            continue
+        kind, target = item["target_kind"], str(item.get("target") or "").strip()
+        quote = str(item.get("quote") or "").strip().strip('"«»“”\' ')
         if kind == "company" and target.upper() not in candidates:
             result.dropped.append(f"company not in the candidates: {target!r}")
             continue
@@ -127,7 +142,10 @@ def validate(raw: dict, doc: sqlite3.Row, candidates: set[str], factors: set[str
         if kind == "sector" and not (0 < len(target) <= 60):
             result.dropped.append(f"bad sector label: {target!r}")
             continue
-        if not quote or len(quote) > MAX_QUOTE or _flat(quote) not in haystack:
+        if len(quote) < MIN_QUOTE_CHARS or len(quote.split()) < MIN_QUOTE_WORDS or len(quote) > MAX_QUOTE:
+            result.dropped.append(f"quote too short or too long to support a signal: {quote[:60]!r}")
+            continue
+        if _flat(quote) not in haystack:
             result.dropped.append(f"quote not found in the article: {quote[:60]!r}")
             continue
         result.signals.append(Signal(
@@ -216,7 +234,7 @@ class ExtractionError(Exception):
 
 
 class StopRun(Exception):
-    """Nothing more can be analysed in this run (key, credit, rate limit, network)."""
+    """Nothing more can be analysed in this run (key, credit, rate limit, network, configuration)."""
 
 
 @dataclass
@@ -230,21 +248,25 @@ class RunSummary:
     touched: list[int] = field(default_factory=list)
 
 
+WAITING = "status = 'ready' OR (status = 'extraction_failed' AND extract_attempts < ?)"
+
+
+def run_size(cfg_llm: dict, limit: int | None) -> int:
+    most = int(cfg_llm["max_documents_per_run"])
+    return most if limit is None else max(0, min(limit, most))
+
+
 def to_extract(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
-    return conn.execute(
-        """
-        SELECT * FROM document
-        WHERE status = 'ready' OR (status = 'extraction_failed' AND extract_attempts < ?)
-        ORDER BY ready_on DESC, id DESC LIMIT ?
-        """,
-        (MAX_ATTEMPTS, limit),
-    ).fetchall()
+    return conn.execute(f"SELECT * FROM document WHERE {WAITING} ORDER BY ready_on DESC, id DESC LIMIT ?",
+                        (MAX_ATTEMPTS, limit)).fetchall()
 
 
+def waiting_count(conn: sqlite3.Connection) -> int:
+    return conn.execute(f"SELECT COUNT(*) AS n FROM document WHERE {WAITING}", (MAX_ATTEMPTS,)).fetchone()["n"]
 
-def request(cfg_llm: dict, doc: sqlite3.Row, candidates: list[sqlite3.Row]) -> dict:
+
+def request(cfg_llm: dict, doc: sqlite3.Row, candidates: list[sqlite3.Row], factors: dict[str, str]) -> dict:
     """Arguments of messages.create for one document."""
-    factors = factors_of(cfg_llm)
     return {
         "model": cfg_llm["model"],
         "max_tokens": int(cfg_llm["max_tokens"]),
@@ -252,33 +274,35 @@ def request(cfg_llm: dict, doc: sqlite3.Row, candidates: list[sqlite3.Row]) -> d
         "messages": [{"role": "user", "content": user_message(doc, candidates, factors,
                                                               int(cfg_llm["max_text_chars"]))}],
         "output_config": {"effort": cfg_llm["effort"],
-                          "format": {"type": "json_schema", "schema": output_schema(list(factors))}},
+                          "format": {"type": "json_schema", "schema": output_schema()}},
     }
 
 
 def extract_one(conn: sqlite3.Connection, cfg_llm: dict, client, doc: sqlite3.Row, today: date,
-                run: RunSummary) -> None:
+                run: RunSummary, factors: dict[str, str]) -> None:
     candidates = candidates_for(conn, doc["id"])
     try:
-        message = client.messages.create(**request(cfg_llm, doc, candidates))
-    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
-        raise StopRun(f"API key refused ({exc.status_code}): check ANTHROPIC_API_KEY") from exc
+        message = client.messages.create(**request(cfg_llm, doc, candidates, factors))
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError, anthropic.CredentialsError) as exc:
+        raise StopRun(f"API key refused: check ANTHROPIC_API_KEY ({exc})") from exc
     except anthropic.RateLimitError as exc:
         raise StopRun("rate limit reached, the rest waits for the next run") from exc
     except anthropic.APIConnectionError as exc:
         raise StopRun(f"cannot reach the API: {exc}") from exc
     except anthropic.APIStatusError as exc:
-        if exc.status_code >= 500 or "credit" in str(exc).lower():
-            raise StopRun(f"API error {exc.status_code}: {exc.message}") from exc
-        _failed(conn, doc, f"API error {exc.status_code}: {exc.message}", run)
-        return
+        if exc.status_code == 413:  # this article only: the others can go through
+            _failed(conn, doc, "article too large for the API: lower llm.max_text_chars", run)
+            return
+        # Anything else (unknown model, bad effort, no credit, outage) would fail every article
+        # the same way and use up their attempts: stop and leave them for the next run.
+        raise StopRun(f"API error {exc.status_code}: {exc.message} (check the llm section of config.yaml)") from exc
     run.cost_usd += record_usage(conn, cfg_llm, doc["id"], today, message.usage)
     try:
         raw = parse_response(message)
     except ExtractionError as exc:
         _failed(conn, doc, str(exc), run)
         return
-    result = validate(raw, doc, {c["isin"] for c in candidates}, set(factors_of(cfg_llm)))
+    result = validate(raw, doc, {c["isin"] for c in candidates}, set(factors))
     save(conn, doc["id"], result, cfg_llm["model"], today)
     run.extracted += 1
     run.signals += len(result.signals)
@@ -293,17 +317,18 @@ def _failed(conn: sqlite3.Connection, doc: sqlite3.Row, reason: str, run: RunSum
 
 
 def run(conn: sqlite3.Connection, cfg_llm: dict, client, today: date, limit: int | None = None,
-        on_doc=None) -> RunSummary:
-    """Analyse the ready documents, newest first, within the per-run and daily limits."""
-    summary = RunSummary()
+        on_doc=None, summary: RunSummary | None = None) -> RunSummary:
+    """Analyse the ready documents, newest first, within the per-run and daily limits.
+    Pass `summary` to keep what was done when the run is interrupted."""
+    summary = summary if summary is not None else RunSummary()
     budget = float(cfg_llm["daily_budget_usd"])
-    count = min(limit or 10**9, int(cfg_llm["max_documents_per_run"]))
-    for n, doc in enumerate(to_extract(conn, count), 1):
+    factors = factors_of(cfg_llm)
+    for n, doc in enumerate(to_extract(conn, run_size(cfg_llm, limit)), 1):
         if spent_on(conn, today) >= budget:
             summary.stopped = f"daily budget of {budget:.2f} USD reached, the rest waits for tomorrow"
             break
         try:
-            extract_one(conn, cfg_llm, client, doc, today, summary)
+            extract_one(conn, cfg_llm, client, doc, today, summary, factors)
         except StopRun as exc:
             summary.stopped = str(exc)
             break
@@ -343,10 +368,7 @@ def _signal_line(row: sqlite3.Row, with_target: bool = True) -> str:
 
 
 def source_lines(conn: sqlite3.Connection, doc: sqlite3.Row) -> list[str]:
-    companies = conn.execute(
-        "SELECT c.name FROM document_company dc JOIN company c ON c.isin = dc.isin WHERE dc.document_id = ? "
-        "ORDER BY c.name", (doc["id"],),
-    ).fetchall()
+    companies = candidates_for(conn, doc["id"])
     lines = [f"# {vault.md_text(doc['title'] or doc['url'])}", "",
              "_Written by `advisor extract`: this block is rewritten when the article is analysed again._", "",
              f"- Source: {doc['source']}, [{vault.md_text(doc['url'])}]({vault.md_url(doc['url'])})",

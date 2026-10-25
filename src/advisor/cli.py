@@ -301,9 +301,9 @@ def cmd_extract(args) -> int:
     cfg, conn = _context(args)
     today = date.today()
     llm = cfg.llm
-    limit = min(args.limit or 10**9, int(llm["max_documents_per_run"]))
+    size = signals.run_size(llm, args.limit)
     if args.dry_run:
-        docs = signals.to_extract(conn, limit)
+        docs = signals.to_extract(conn, size)
         chars = sum(min(len(d["text"] or ""), int(llm["max_text_chars"])) for d in docs)
         tokens = chars // 3 + 1500 * len(docs)  # rough: ~3 characters a token, plus prompt and schema
         print(f"{len(docs)} articles would be analysed with {llm['model']}, about {tokens:,} input tokens, "
@@ -311,20 +311,21 @@ def cmd_extract(args) -> int:
         for doc in docs[:20]:
             print(f"  {doc['id']}: {doc['title'] or doc['url']}")
         return 0
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         print("ANTHROPIC_API_KEY is not set: signal extraction skipped (see the README).")
         return 0 if args.command == "daily" else 1
-    waiting = len(signals.to_extract(conn, limit))
-    progress = Progress("Analysis", total=waiting, every=10)
-    with anthropic.Anthropic(max_retries=3) as client:
-        try:
-            run = signals.run(conn, llm, client, today, limit=args.limit, on_doc=progress.update)
-        finally:
-            progress.done()
-    for doc_id in run.touched:
-        doc = conn.execute("SELECT * FROM document WHERE id = ?", (doc_id,)).fetchone()
-        vault.write_source(cfg.vault, doc, signals.source_lines(conn, doc))
-    path = vault.write_digest(cfg.vault, today, signals.digest_lines(conn, today, run), block="signals")
+    run = signals.RunSummary()
+    progress = Progress("Analysis", total=min(size, signals.waiting_count(conn)), every=10)
+    try:
+        with anthropic.Anthropic(max_retries=3) as client:
+            signals.run(conn, llm, client, today, limit=args.limit, on_doc=progress.update, summary=run)
+    finally:
+        progress.done()
+        # Also after an interruption: what was analysed gets its notes and its place in the digest.
+        for doc_id in run.touched:
+            doc = conn.execute("SELECT * FROM document WHERE id = ?", (doc_id,)).fetchone()
+            vault.write_source(cfg.vault, doc, signals.source_lines(conn, doc))
+        path = vault.write_digest(cfg.vault, today, signals.digest_lines(conn, today, run), block="signals")
     print(f"Analysed: {run.extracted} articles, {run.signals} signals ({run.dropped} dropped), "
           f"{run.failed} failed, about {run.cost_usd:.3f} USD")
     if run.stopped:
