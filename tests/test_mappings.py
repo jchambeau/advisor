@@ -114,9 +114,9 @@ def test_page_lookup_matches_and_wins_over_name(conn):
     assert m.isin_by_code(conn) == {"1rPALDUX": "FR0012821890"}
     m.save(conn, {"1rPOTHER": "FR0012821890"}, [])  # a later name match does not replace it
     assert m.isin_by_code(conn) == {"1rPALDUX": "FR0012821890"}
-    # Found codes are not read again; a page with nothing is read again after the retry delay.
+    # Pages are read again only after the retry delay (mapped codes are never passed in).
     assert m.codes_to_look_up(conn, ["1rPALDUX", "1rPX"], date(2026, 11, 1), 30) == []
-    assert m.codes_to_look_up(conn, ["1rPALDUX", "1rPX"], date(2026, 12, 1), 30) == ["1rPX"]
+    assert m.codes_to_look_up(conn, ["1rPALDUX", "1rPX"], date(2026, 12, 1), 30) == ["1rPALDUX", "1rPX"]
 
 
 def test_manual_line_wins_over_page_match(conn):
@@ -142,3 +142,39 @@ def test_name_match_on_a_page_row_that_lost_its_code_is_auto_again(conn):
     m.save(conn, {"1rPY": "FR0013341781"}, [])
     r = conn.execute("SELECT * FROM mapping WHERE isin = 'FR0013341781'").fetchone()
     assert (r["boursorama_code"], r["source"]) == ("1rPY", "auto")
+
+
+def test_export_explains_each_unmatched_stock(conn, tmp_path):
+    from datetime import date
+
+    conn.execute("INSERT INTO company (isin, name, market) VALUES ('FR0012821890', 'ADUX', 'Euronext Growth Paris')")
+    conn.execute("INSERT INTO company (isin, name, market) VALUES ('FR0013341781', '2CRSI', 'Euronext Growth Paris')")
+    m.save(conn, {"1rPAL2SI": "FR0013341781"}, [])
+    day = date(2026, 10, 26)
+    m.record_lookup(conn, "1rPAC", "FR0000120404", day)  # Accor: not in the PEA PME list
+    m.record_lookup(conn, "1rPNONE", None, day)
+    m.record_lookup(conn, "1rAADUX", "FR0012821890", day)
+    m.record_lookup(conn, "1rAAL2SI", "FR0013341781", day)  # second venue of a matched company
+    unmatched = [("1rPAC", "ACCOR"), ("1rPNONE", "NONE"), ("1rAADUX", "ADUX"), ("1rPNEW", "NEW"), ("1rAAL2SI", "2CRSI")]
+    path, nothing_to_do = m.export_unmatched(conn, tmp_path / "u.csv", unmatched, {"FR0012821890", "FR0013341781"})
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "boursorama_code;boursorama_name;isin_on_page;note"
+    assert [line.split(";")[0] for line in lines[1:]] == ["1rAADUX", "1rPNONE", "1rPNEW", "1rPAC", "1rAAL2SI"]
+    assert lines[4] == "1rPAC;ACCOR;FR0000120404;not in the Euronext list: nothing to do"
+    assert nothing_to_do == 2
+
+
+def test_old_lookup_table_is_migrated(tmp_path):
+    import sqlite3
+
+    from advisor.db import connect
+
+    db = tmp_path / "a.db"
+    old = sqlite3.connect(db)
+    old.execute("CREATE TABLE isin_lookup (boursorama_code TEXT PRIMARY KEY, isin TEXT, checked_on TEXT NOT NULL)")
+    old.execute("INSERT INTO isin_lookup VALUES ('1rPALDUX', 'FR0012821890', '2026-10-25'), ('1rPAC', NULL, '2026-10-25')")
+    old.commit()
+    old.close()
+    conn = connect(db)
+    assert [tuple(r) for r in conn.execute("SELECT * FROM stock_page_isin")] == [("1rPALDUX", "FR0012821890", "2026-10-25")]
+    assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'isin_lookup'").fetchone()

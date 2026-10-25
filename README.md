@@ -57,9 +57,11 @@ every few steps.
 The quotes list does not show the ISIN, so stocks are matched by name first. A company listed
 on several venues (e.g. Paris and Amsterdam) keeps the line of its own market. Stocks the
 name match misses are then looked up on their own Boursorama page, which shows the ISIN (one
-request each, at most `max_isin_lookups` per run; a page showing no ISIN of the universe is
+request each, at most `max_isin_lookups` per run; the page of a stock still unmatched is
 read again after `isin_lookup_retry_days`). Stocks still unmatched are listed in
-`data/exports/unmatched_boursorama.csv`. To fix one, create `mappings.csv` next to
+`data/exports/unmatched_boursorama.csv`, with the ISIN their page shows and why each one is
+left out. Boursorama's PEA PME filter is wider than Euronext's official list, so many of them
+(e.g. Accor) are simply not in the list and need nothing; those come last in the file. To fix one, create `mappings.csv` next to
 `config.yaml` (or wherever `paths.mappings` points) from `mappings.example.csv` (header only): one line per
 company, e.g. `FR0013341781;1rPAL2SI;AL2SI.PA`; any column but `isin` may be left empty. It always
 wins over the automatic match.

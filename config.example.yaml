@@ -30,4 +30,4 @@ boursorama:
   pause_seconds: 2.0
   # Stocks the name match misses are looked up on their own page (one request each).
   max_isin_lookups: 200        # per run, so the first run stays reasonable
-  isin_lookup_retry_days: 30   # a page that showed no ISIN of the universe is read again after this
+  isin_lookup_retry_days: 30   # page of a stock still unmatched is read again after this

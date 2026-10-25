@@ -100,7 +100,7 @@ def fetch(
     client: httpx.Client | None = None,
     on_page: Callable[[int, int, int | None], None] | None = None,
 ) -> tuple[list[Row], str | None]:
-    """Walk the pages until one of them brings no new stock.
+    """Walk the pages up to the last one the pagination links, or until a page brings no new stock.
 
     Returns the rows and, when a later page failed, the error that stopped the crawl
     (the rows already read are kept). A failure on the first page raises.
@@ -133,6 +133,8 @@ def fetch(
             seen.update({r.code: r for r in new_rows})
             if on_page:
                 on_page(page, len(seen), total_pages)
+            if total_pages and page >= total_pages:
+                break  # past the last page, the site may serve another listing (no market filter)
             time.sleep(float(config.get("pause_seconds", 2.0)))
     finally:
         if owned:

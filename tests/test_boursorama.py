@@ -196,3 +196,19 @@ def test_look_up_isins_stops_after_failures_in_a_row():
     client = httpx.Client(transport=httpx.MockTransport(respond))
     assert list(boursorama.look_up_isins(CONFIG, [f"1rP{i}" for i in range(10)], client=client)) == []
     assert len(seen) == 3
+
+
+def test_fetch_stops_at_the_last_linked_page():
+    pagination = '<a href="/c/page-2?quotation_az_filter%5Bmarket%5D=PEAPME">2</a>'
+    other = PAGE.replace("1rPAL2SI", "1rPAC").replace("1rPSFT", "1rPOR").replace("1rPALXYZ", "1rPMC")
+    asked = []
+    def respond(request):
+        asked.append(request.url.path)
+        page = 1 if "page-" not in request.url.path else int(request.url.path.rsplit("-", 1)[1])
+        html = PAGE + pagination if page == 1 else PAGE.replace("1rP", "1rQ") if page == 2 else other
+        return httpx.Response(200, text=html)
+    rows, error = boursorama.fetch(
+        {"url": "https://example.test/c/", "market_filter": "PEAPME", "pause_seconds": 0},
+        httpx.Client(transport=httpx.MockTransport(respond)),
+    )
+    assert len(asked) == 2 and len(rows) == 6 and error is None

@@ -35,9 +35,9 @@ CREATE TABLE IF NOT EXISTS mapping (
     source          TEXT NOT NULL DEFAULT 'auto'   -- 'auto' (name), 'page' (ISIN on the stock's page) or 'manual'
 );
 
-CREATE TABLE IF NOT EXISTS isin_lookup (
+CREATE TABLE IF NOT EXISTS stock_page_isin (
     boursorama_code TEXT PRIMARY KEY,
-    isin            TEXT,          -- ISIN of the universe shown on the stock's page, NULL if none
+    isin            TEXT,          -- ISIN shown on the stock's page, in the universe or not; NULL if none
     checked_on      TEXT NOT NULL
 );
 
@@ -71,4 +71,13 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    # isin_lookup (first version) only kept ISINs of the universe: keep those, read the others again.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'isin_lookup'").fetchone():
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO stock_page_isin SELECT * FROM isin_lookup WHERE isin IS NOT NULL")
+            conn.execute("DROP TABLE isin_lookup")
