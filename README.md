@@ -6,8 +6,8 @@ Obsidian notes and sector scenarios at 3 months, 1 year and 5 years.
 
 > The output of this tool is an aid to personal thinking, not investment advice.
 
-Version 1 runs locally. Every path and setting lives in `config.yaml`, so the tool can move
-to a VPS later without code changes.
+Version 1 runs locally. Every path and setting lives in `config.yaml` (required: the tool
+stops if it cannot find it), so the tool can move to a VPS later without code changes.
 
 ## Setup
 
@@ -40,7 +40,10 @@ with a reason. These choices are kept from one import to the next.
 ### 3. Volumes
 
 - `advisor fetch-volumes` saves today's session from Boursorama's "PEA PME quotes" page
-  (close and volume). Run it every trading evening: this is what builds the history.
+  (close and volume). Run it every trading evening: this is what builds the history. The page
+  only shows the latest session, so nothing is saved on a weekend, for a date other than
+  today, or when most stocks show the same figures as the previous snapshot (holiday, run
+  before the open); `--force` overrides these checks.
 - `advisor backfill-history` seeds 6 months of history through yfinance, until enough
   Boursorama snapshots exist. For the same session, Boursorama takes precedence.
 
@@ -61,7 +64,9 @@ sessions (about 3 months), a company is **liquid** when:
   company already liquid, to avoid flip-flopping);
 - at least 95% of sessions have a trade.
 
-With fewer than 20 known sessions, the status is **unknown**. Every threshold is set in
+Only sessions up to the computation date count. The status is **unknown** with fewer than
+20 known sessions, when the latest session is more than 10 days old, or when a stock is quoted
+in a currency missing from `currencies`; the export says why. Every threshold is set in
 `config.yaml`. Turnover of Oslo stocks is converted to euros with the rate set under
 `currencies`. Details are exported to `data/exports/liquidity_<date>.csv`.
 

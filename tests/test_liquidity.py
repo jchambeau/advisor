@@ -54,8 +54,23 @@ def test_window_keeps_latest_sessions():
 def test_currency_conversion():
     r = evaluate(series(63, 100.0, 2500, currency="NOK"), RULES, CURRENCIES)  # NOK 250,000 = EUR 25,000
     assert r.median_turnover == pytest.approx(25000) and r.status == LIQUID
-    with pytest.raises(ValueError):
-        evaluate(series(63, 1.0, 1, currency="USD"), RULES, CURRENCIES)
+
+
+def test_missing_rate_gives_unknown_instead_of_crashing():
+    r = evaluate(series(63, 1.0, 1, currency="GBp"), RULES, {**CURRENCIES, "GBP": 1.15})
+    assert r.status == UNKNOWN and "GBp" in r.note
+
+
+def test_ignores_sessions_after_the_computation_date():
+    s = series(63, 10.0, 3000)  # 2026-06-01 .. 2026-08-02
+    assert evaluate(s, RULES, CURRENCIES, as_of=date(2026, 6, 10)).status == UNKNOWN  # only 10 sessions
+    assert evaluate(s, RULES, CURRENCIES, as_of=date(2026, 8, 2)).status == LIQUID
+
+
+def test_stale_data_gives_unknown():
+    s = series(63, 10.0, 3000)  # latest session 2026-08-02
+    r = evaluate(s, RULES, CURRENCIES, previous_status=LIQUID, as_of=date(2026, 10, 24))
+    assert r.status == UNKNOWN and "days old" in r.note
 
 
 def test_boursorama_priority_and_stored_result(conn):

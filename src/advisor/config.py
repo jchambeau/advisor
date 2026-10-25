@@ -22,6 +22,7 @@ DEFAULTS = {
         "median_turnover_entry": 20000,
         "median_turnover_exit": 15000,
         "min_active_session_ratio": 0.95,
+        "max_staleness_days": 10,
     },
     "currencies": {"EUR": 1.0},
     "boursorama": {
@@ -40,6 +41,7 @@ class LiquidityRules:
     median_turnover_entry: float = 20000
     median_turnover_exit: float = 15000
     min_active_session_ratio: float = 0.95
+    max_staleness_days: int = 10
 
 
 @dataclass
@@ -66,11 +68,12 @@ def _merge(defaults: dict, values: dict) -> dict:
 
 
 def load(path: str | Path | None = None) -> Config:
-    """Load config.yaml (or ADVISOR_CONFIG). Without a file, defaults apply."""
+    """Load config.yaml (or ADVISOR_CONFIG). Missing keys take their default values."""
     path = Path(path or os.environ.get("ADVISOR_CONFIG", "config.yaml")).resolve()
-    raw = {}
-    if path.exists():
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not path.exists():
+        # Fail loudly: silently falling back would create an empty database elsewhere.
+        raise SystemExit(f"Configuration file not found: {path} (copy config.example.yaml to config.yaml)")
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     data = _merge(DEFAULTS, raw)
     root = path.parent
 
@@ -87,6 +90,6 @@ def load(path: str | Path | None = None) -> Config:
         mappings=resolve(paths["mappings"]),
         exports=resolve(paths["exports"]),
         liquidity=LiquidityRules(**data["liquidity"]),
-        currencies={k.upper(): float(v) for k, v in data["currencies"].items()},
+        currencies={k: float(v) for k, v in data["currencies"].items()},
         boursorama=data["boursorama"],
     )

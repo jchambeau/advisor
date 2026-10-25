@@ -15,8 +15,10 @@ liquidity:
   median_turnover_entry: 20000      # EUR per day to enter the liquid universe
   median_turnover_exit: 15000       # EUR per day below which a liquid stock drops out
   min_active_session_ratio: 0.95
+  max_staleness_days: 10            # latest session older than this: status "unknown"
 
-# Conversion rates to euros, updated by hand (1 unit = x EUR).
+# Conversion rates to euros, updated by hand (1 unit = x EUR). Codes are case-sensitive
+# ("GBp" is pence). A stock quoted in a currency missing here gets status "unknown".
 currencies:
   EUR: 1.0
   NOK: 0.085

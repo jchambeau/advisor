@@ -54,27 +54,37 @@ def match(companies: list[sqlite3.Row], boursorama_names: dict[str, str]) -> tup
 def load_manual(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with path.open(encoding="utf-8") as f:
+    with path.open(encoding="utf-8-sig") as f:  # tolerate the BOM Excel adds
+        reader = csv.DictReader(f, delimiter=";")
+        if "isin" not in (reader.fieldnames or []):
+            raise ValueError(f"{path.name}: expected header isin;boursorama_code;yahoo_ticker, got {reader.fieldnames}")
         return [
             {k: (v or "").strip() for k, v in row.items()}
-            for row in csv.DictReader(f, delimiter=";")
+            for row in reader
             if (row.get("isin") or "").strip()
         ]
 
 
 def save(conn: sqlite3.Connection, automatic: dict[str, str], manual: list[dict]) -> None:
+    manual_codes = {m["boursorama_code"] for m in manual if m.get("boursorama_code")}
     with conn:
         for code, isin in automatic.items():
+            if code in manual_codes:
+                continue  # a manual line already says which company this code belongs to
             conn.execute(
                 """
                 INSERT INTO mapping (isin, boursorama_code, yahoo_ticker, source)
                 VALUES (?, ?, ?, 'auto')
                 ON CONFLICT(isin) DO UPDATE SET
-                    boursorama_code = excluded.boursorama_code,
+                    boursorama_code = CASE WHEN mapping.source = 'auto' OR mapping.boursorama_code IS NULL
+                                           THEN excluded.boursorama_code ELSE mapping.boursorama_code END,
                     yahoo_ticker = COALESCE(mapping.yahoo_ticker, excluded.yahoo_ticker)
-                WHERE mapping.source = 'auto'
                 """,
                 (isin, code, yahoo_ticker_from_boursorama(code)),
+            )
+        for code in manual_codes:
+            conn.execute(
+                "UPDATE mapping SET boursorama_code = NULL WHERE boursorama_code = ? AND source = 'auto'", (code,)
             )
         for m in manual:
             conn.execute(
@@ -82,8 +92,8 @@ def save(conn: sqlite3.Connection, automatic: dict[str, str], manual: list[dict]
                 INSERT INTO mapping (isin, boursorama_code, yahoo_ticker, source)
                 VALUES (?, ?, ?, 'manual')
                 ON CONFLICT(isin) DO UPDATE SET
-                    boursorama_code = excluded.boursorama_code,
-                    yahoo_ticker = excluded.yahoo_ticker,
+                    boursorama_code = COALESCE(excluded.boursorama_code, mapping.boursorama_code),
+                    yahoo_ticker = COALESCE(excluded.yahoo_ticker, mapping.yahoo_ticker),
                     source = 'manual'
                 """,
                 (m["isin"].upper(), m.get("boursorama_code") or None, m.get("yahoo_ticker") or None),
@@ -91,9 +101,13 @@ def save(conn: sqlite3.Connection, automatic: dict[str, str], manual: list[dict]
 
 
 def isin_by_code(conn: sqlite3.Connection) -> dict[str, str]:
+    # Manual rows come last so they win if a code still appears twice.
     return {
         r["boursorama_code"]: r["isin"]
-        for r in conn.execute("SELECT isin, boursorama_code FROM mapping WHERE boursorama_code IS NOT NULL")
+        for r in conn.execute(
+            "SELECT isin, boursorama_code FROM mapping WHERE boursorama_code IS NOT NULL "
+            "ORDER BY source = 'manual', isin"
+        )
     }
 
 

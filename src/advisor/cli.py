@@ -64,8 +64,13 @@ def cmd_import_list(args) -> int:
 def cmd_fetch_volumes(args) -> int:
     cfg, conn = _context(args)
     day = _day(args.date)
-    if day.weekday() >= 5:
-        print(f"Warning: {day} is a weekend day, the page shows the latest session.")
+    # The page only shows the latest session: saving it under another date would duplicate it.
+    if day.weekday() >= 5 and not args.force:
+        print(f"{day} is a weekend day: nothing saved (--force to save anyway).")
+        return 1
+    if day != date.today() and not args.force:
+        print(f"The page only shows the latest session, not {day}: nothing saved (--force to save anyway).")
+        return 1
     companies = overrides.universe(conn, overrides.load(cfg.overrides))
     if not companies:
         print("Empty universe: import a list first (advisor import-list).")
@@ -78,7 +83,13 @@ def cmd_fetch_volumes(args) -> int:
     mappings.save(conn, matched, mappings.load_manual(cfg.mappings))
     codes = mappings.isin_by_code(conn)
     unmatched = [(c, n) for c, n in unmatched if c not in codes]
-    n = boursorama.save(conn, rows, codes, day)
+    repeated = boursorama.repeated_share(conn, rows, codes, day)
+    if repeated is not None and repeated >= 0.8 and not args.force:
+        print(f"{repeated:.0%} of stocks show the same close and volume as the previous snapshot: "
+              "the market was probably closed. Nothing saved (--force to save anyway).")
+        return 1
+    currency_by_isin = {c["isin"]: liquidity.default_currency(c["market"]) for c in companies}
+    n = boursorama.save(conn, rows, codes, currency_by_isin, day)
     print(f"Session of {day} saved for {n} companies")
     if unmatched:
         path = mappings.export_unmatched(cfg.exports / "unmatched_boursorama.csv", unmatched)
@@ -115,8 +126,8 @@ def cmd_liquidity(args) -> int:
 
 def cmd_daily(args) -> int:
     """Evening run: volume snapshot, then liquidity update."""
-    code = cmd_fetch_volumes(args)
-    return code or cmd_liquidity(args)
+    cmd_fetch_volumes(args)  # on a holiday nothing is saved, liquidity is still refreshed
+    return cmd_liquidity(args)
 
 
 def cmd_status(args) -> int:
@@ -150,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("fetch-volumes", help="save today's session from Boursorama")
     s.add_argument("--date", help="session date (YYYY-MM-DD), default: today")
+    s.add_argument("--force", action="store_true", help="save even on a weekend, another date or a repeated page")
     s.set_defaults(func=cmd_fetch_volumes)
 
     s = sub.add_parser("backfill-history", help="seed the volume history through yfinance")
@@ -163,6 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("daily", help="evening run: Boursorama volumes, then liquidity")
     s.add_argument("--date", help="session date (YYYY-MM-DD), default: today")
+    s.add_argument("--force", action="store_true", help="see fetch-volumes")
     s.set_defaults(func=cmd_daily)
 
     s = sub.add_parser("status", help="summary of the database state")

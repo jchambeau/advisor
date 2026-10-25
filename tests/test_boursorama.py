@@ -66,9 +66,23 @@ def test_fetch_stops_when_nothing_new():
     assert len(rows) == 3 and len(calls) == 2
 
 
-def test_save(conn):
+def test_save_with_market_currency(conn):
     rows = boursorama.parse(PAGE)
-    n = boursorama.save(conn, rows, {"1rPAL2SI": "FR0013341781"}, date(2026, 10, 23))
-    assert n == 1
-    r = conn.execute("SELECT * FROM daily_volume").fetchone()
-    assert (r["isin"], r["date"], r["volume"], r["source"]) == ("FR0013341781", "2026-10-23", 117988, "boursorama")
+    codes = {"1rPAL2SI": "FR0013341781", "1rPSFT": "NO0010000000"}
+    n = boursorama.save(conn, rows, codes, {"NO0010000000": "NOK"}, date(2026, 10, 23))
+    assert n == 2
+    saved = {r["isin"]: r for r in conn.execute("SELECT * FROM daily_volume")}
+    r = saved["FR0013341781"]
+    assert (r["date"], r["volume"], r["currency"], r["source"]) == ("2026-10-23", 117988, "EUR", "boursorama")
+    assert saved["NO0010000000"]["currency"] == "NOK"
+
+
+def test_repeated_share(conn):
+    rows = boursorama.parse(PAGE)
+    codes = {"1rPAL2SI": "FR0013341781", "1rPSFT": "FR0011040500"}
+    assert boursorama.repeated_share(conn, rows, codes, date(2026, 10, 23)) is None
+    boursorama.save(conn, rows, codes, {}, date(2026, 10, 23))
+    # same page on the next day (a holiday): every stock is a repeat
+    assert boursorama.repeated_share(conn, rows, codes, date(2026, 10, 24)) == 1.0
+    rows[0].volume += 1
+    assert boursorama.repeated_share(conn, rows, codes, date(2026, 10, 24)) == 0.5

@@ -128,8 +128,14 @@ def read(file: str | Path) -> EuronextList:
 def compare(conn: sqlite3.Connection, new_list: EuronextList) -> Changes:
     known = {r["isin"]: r for r in conn.execute("SELECT * FROM company")}
     incoming = {c.isin for c in new_list.companies}
-    added = [c for c in new_list.companies if c.isin not in known]
-    returned = [c for c in new_list.companies if c.isin in known and not known[c.isin]["listed"]]
+    # A company only known through a manual inclusion was never in a list: it counts as added.
+    def never_listed(isin):
+        return isin not in known or known[isin]["added_on"] is None
+
+    added = [c for c in new_list.companies if never_listed(c.isin)]
+    returned = [
+        c for c in new_list.companies if not never_listed(c.isin) and not known[c.isin]["listed"]
+    ]
     removed = [r for isin, r in known.items() if r["listed"] and isin not in incoming]
     unchanged = len(new_list.companies) - len(added) - len(returned)
     return Changes(added, removed, returned, unchanged)
@@ -146,7 +152,8 @@ def apply(conn: sqlite3.Connection, new_list: EuronextList, changes: Changes) ->
                 ON CONFLICT(isin) DO UPDATE SET
                     name = excluded.name, market = excluded.market,
                     segment = excluded.segment, country = excluded.country,
-                    listed = 1, removed_on = NULL, list_date = excluded.list_date
+                    listed = 1, removed_on = NULL, list_date = excluded.list_date,
+                    added_on = COALESCE(company.added_on, excluded.added_on)
                 """,
                 (c.isin, c.name, c.market, c.segment, c.country, day, day),
             )

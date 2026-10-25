@@ -47,7 +47,7 @@ def backfill(conn: sqlite3.Connection, companies: list[sqlite3.Row], period: str
                     INSERT OR REPLACE INTO daily_volume (isin, date, close, volume, currency, source)
                     VALUES (?, ?, ?, ?, ?, 'yahoo')
                     """,
-                    (c["isin"], day.date().isoformat(), float(row["Close"]), float(row["Volume"]), currency.upper()),
+                    (c["isin"], day.date().isoformat(), float(row["Close"]), float(row["Volume"]), currency),
                 )
                 n += 1
         summary[c["isin"]] = n

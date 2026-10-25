@@ -69,6 +69,19 @@ def test_added_removed_returned(conn, make_list):
     assert euronext.latest_list_date(conn) == "2026-11-01"
 
 
+def test_manual_inclusion_later_listed_counts_as_added(conn, make_list):
+    from advisor import overrides
+
+    ov = overrides.Overrides(include=[{"isin": "FR0013341781", "name": "2CRSI"}])
+    overrides.apply_inclusions(conn, ov)
+    new_list = euronext.read(make_list("l.xlsx", [CRSI], date_text="01/09/2026"))
+    changes = euronext.compare(conn, new_list)
+    assert [c.isin for c in changes.added] == ["FR0013341781"] and not changes.returned
+    euronext.apply(conn, new_list, changes)
+    row = conn.execute("SELECT * FROM company").fetchone()
+    assert row["listed"] == 1 and row["added_on"] == "2026-09-01"
+
+
 REAL_LIST = os.environ.get("ADVISOR_REAL_LIST")
 
 

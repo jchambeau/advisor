@@ -102,7 +102,38 @@ def fetch(config: dict, client: httpx.Client | None = None) -> list[Row]:
     return list(seen.values())
 
 
-def save(conn: sqlite3.Connection, rows: list[Row], isin_by_code: dict[str, str], day: date) -> int:
+def repeated_share(conn: sqlite3.Connection, rows: list[Row], isin_by_code: dict[str, str], day: date) -> float | None:
+    """Share of stocks whose close and volume equal their latest stored snapshot before `day`.
+
+    A high share means the page still shows a session already saved (holiday, weekend,
+    run before the open). Returns None when there is nothing to compare with.
+    """
+    same = compared = 0
+    for r in rows:
+        isin = isin_by_code.get(r.code)
+        if isin is None or r.close is None:
+            continue
+        last = conn.execute(
+            """
+            SELECT close, volume FROM daily_volume
+            WHERE isin = ? AND source = 'boursorama' AND date < ? ORDER BY date DESC LIMIT 1
+            """,
+            (isin, day.isoformat()),
+        ).fetchone()
+        if last is None:
+            continue
+        compared += 1
+        same += last["close"] == r.close and last["volume"] == r.volume
+    return same / compared if compared else None
+
+
+def save(
+    conn: sqlite3.Connection,
+    rows: list[Row],
+    isin_by_code: dict[str, str],
+    currency_by_isin: dict[str, str],
+    day: date,
+) -> int:
     n = 0
     with conn:
         for r in rows:
@@ -112,9 +143,9 @@ def save(conn: sqlite3.Connection, rows: list[Row], isin_by_code: dict[str, str]
             conn.execute(
                 """
                 INSERT OR REPLACE INTO daily_volume (isin, date, close, volume, currency, source)
-                VALUES (?, ?, ?, ?, 'EUR', 'boursorama')
+                VALUES (?, ?, ?, ?, ?, 'boursorama')
                 """,
-                (isin, day.isoformat(), r.close, r.volume),
+                (isin, day.isoformat(), r.close, r.volume, currency_by_isin.get(isin, "EUR")),
             )
             n += 1
     return n

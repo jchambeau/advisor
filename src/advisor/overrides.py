@@ -54,6 +54,7 @@ def apply_inclusions(conn: sqlite3.Connection, ov: Overrides) -> int:
 
 def universe(conn: sqlite3.Connection, ov: Overrides) -> list[sqlite3.Row]:
     """Tracked companies: current Euronext list + manual inclusions - exclusions."""
+    apply_inclusions(conn, ov)  # an inclusion added since the last list import counts right away
     included = {a["isin"] for a in ov.include}
     rows = conn.execute("SELECT * FROM company ORDER BY name").fetchall()
     return [
