@@ -1,0 +1,28 @@
+# Copy this file to config.yaml and adjust it.
+# Relative paths are resolved against the directory of this file.
+# The ADVISOR_CONFIG environment variable can point to another file.
+
+paths:
+  database: data/advisor.db
+  lists: data/lists                 # Euronext files dropped in by hand
+  overrides: overrides.yaml         # manual inclusions and exclusions
+  mappings: mappings.csv            # ISIN <-> Boursorama / Yahoo codes, editable by hand
+  exports: data/exports
+
+liquidity:
+  window_sessions: 63               # about 3 months of trading
+  min_sessions: 20                  # below this, status is "unknown"
+  median_turnover_entry: 20000      # EUR per day to enter the liquid universe
+  median_turnover_exit: 15000       # EUR per day below which a liquid stock drops out
+  min_active_session_ratio: 0.95
+
+# Conversion rates to euros, updated by hand (1 unit = x EUR).
+currencies:
+  EUR: 1.0
+  NOK: 0.085
+
+boursorama:
+  url: "https://www.boursorama.com/bourse/actions/cotations/"
+  market_filter: PEAPME
+  max_pages: 60
+  pause_seconds: 2.0
