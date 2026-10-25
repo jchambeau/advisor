@@ -1,0 +1,14 @@
+# Copy to overrides.yaml. These choices are kept from one list import to the next.
+
+# Companies to exclude from the universe, even if they appear in the Euronext list.
+exclude:
+  # - isin: FR0000000000
+  #   reason: "Business I do not want to follow"
+
+# Companies to include, even if they do not appear in the Euronext list.
+include:
+  # - isin: FR0000000000
+  #   name: "EXAMPLE SA"
+  #   market: "Euronext Paris"
+  #   country: "France"
+  #   reason: "Eligibility confirmed by the company"

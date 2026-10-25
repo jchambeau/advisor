@@ -1,0 +1,17 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    # The tool runs on Fedora: test in the same distribution.
+    container: fedora:latest
+    steps:
+      - run: dnf install -y python3 git
+      - uses: actions/checkout@v4
+      - run: python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+      - run: .venv/bin/pytest -q
