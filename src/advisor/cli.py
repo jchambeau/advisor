@@ -10,6 +10,7 @@ from pathlib import Path
 from . import boursorama, euronext, history, liquidity, mappings, overrides
 from .config import load
 from .db import connect
+from .progress import Progress
 
 
 def _context(args):
@@ -79,7 +80,17 @@ def cmd_fetch_volumes(args) -> int:
         print("Empty universe: import a list first (advisor import-list).")
         return 1
 
-    rows, error = boursorama.fetch(cfg.boursorama)
+    progress = Progress("Boursorama pages", every=5)
+
+    def on_page(page: int, stocks: int, total_pages: int | None) -> None:
+        progress.total = total_pages
+        progress.update(page, f"{stocks} stocks read")
+
+    rows = []
+    try:
+        rows, error = boursorama.fetch(cfg.boursorama, on_page=on_page)
+    finally:
+        progress.done(f"{len(rows)} stocks read")
     print(f"Boursorama: {len(rows)} stocks read")
     if error:
         print(f"Warning: crawl stopped early ({error}); saving the pages already read.")
@@ -100,11 +111,41 @@ def cmd_fetch_volumes(args) -> int:
         r["isin"]: liquidity.default_currency(r["market"]) for r in conn.execute("SELECT isin, market FROM company")
     }
     n = boursorama.save(conn, rows, codes, currency_by_isin, day)
+    if unmatched:
+        # After the session is saved, so a slow or failing lookup never costs the day's volumes.
+        try:
+            _look_up_on_pages(cfg, conn, companies, [c for c, _ in unmatched])
+        except Exception as exc:
+            print(f"Warning: ISIN lookup on stock pages failed: {exc!r}")
+        codes = mappings.isin_by_code(conn)
+        unmatched = [(c, nm) for c, nm in unmatched if c not in codes]
+        n = boursorama.save(conn, rows, codes, currency_by_isin, day)
     print(f"Session of {day} saved for {n} companies")
     if unmatched:
         path = mappings.export_unmatched(cfg.exports / "unmatched_boursorama.csv", unmatched)
         print(f"{len(unmatched)} stocks not matched: see {path} and complete {cfg.mappings.name}")
     return 0
+
+
+def _look_up_on_pages(cfg, conn, companies, unmatched_codes: list[str]) -> None:
+    """Read the ISIN on the own page of stocks the name match missed."""
+    today = date.today()
+    to_check = mappings.codes_to_look_up(conn, unmatched_codes, today, int(cfg.boursorama["isin_lookup_retry_days"]))
+    to_check = to_check[: int(cfg.boursorama["max_isin_lookups"])]
+    if to_check:
+        known = {c["isin"] for c in companies}
+        progress = Progress("ISIN lookups", total=len(to_check), every=20)
+        read = found = 0
+        try:
+            for code, isin in boursorama.look_up_isins(cfg.boursorama, to_check):
+                # Recorded one by one, so an interrupted run keeps the pages already read.
+                mappings.record_lookup(conn, code, isin if isin in known else None, today)
+                read += 1
+                found += isin in known
+                progress.update(read, code)
+        finally:
+            progress.done(f"{found} of {read} pages read show a listed ISIN")
+    mappings.save_page_matches(conn, mappings.matches_from_lookups(conn, companies, unmatched_codes))
 
 
 def cmd_backfill_history(args) -> int:
@@ -113,7 +154,11 @@ def cmd_backfill_history(args) -> int:
     companies = overrides.universe(conn, overrides.load(cfg.overrides))
     if args.limit:
         companies = companies[: args.limit]
-    summary = history.backfill(conn, companies, args.period)
+    progress = Progress("Yahoo history", total=len(companies))
+    try:
+        summary = history.backfill(conn, companies, args.period, on_company=progress.update)
+    finally:
+        progress.done(f"{len(companies)} companies processed")
     found = sum(1 for n in summary.values() if n)
     print(f"Yahoo history: {found}/{len(summary)} companies with data")
     return 0

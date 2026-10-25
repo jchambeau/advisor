@@ -50,9 +50,19 @@ with a reason. These choices are kept from one import to the next.
 - `advisor backfill-history` seeds 6 months of history through yfinance, until enough
   Boursorama snapshots exist. For the same session, Boursorama takes precedence.
 
-Boursorama does not show the ISIN, so stocks are matched by name. Unmatched stocks are listed
-in `data/exports/unmatched_boursorama.csv`; copy them into `mappings.csv`
-(`isin;boursorama_code;yahoo_ticker`), which always wins over the automatic match.
+Both commands show their progress on stderr (page X/N, or company X/N with an estimate of the
+time left); on a terminal the line updates in place, in the systemd journal a line is written
+every few steps.
+
+The quotes list does not show the ISIN, so stocks are matched by name first. A company listed
+on several venues (e.g. Paris and Amsterdam) keeps the line of its own market. Stocks the
+name match misses are then looked up on their own Boursorama page, which shows the ISIN (one
+request each, at most `max_isin_lookups` per run; a page showing no ISIN of the universe is
+read again after `isin_lookup_retry_days`). Stocks still unmatched are listed in
+`data/exports/unmatched_boursorama.csv`. To fix one, create `mappings.csv` next to
+`config.yaml` (or wherever `paths.mappings` points) from `mappings.example.csv` (header only): one line per
+company, e.g. `FR0013341781;1rPAL2SI;AL2SI.PA`; any column but `isin` may be left empty. It always
+wins over the automatic match.
 
 ### 4. Liquidity filter
 

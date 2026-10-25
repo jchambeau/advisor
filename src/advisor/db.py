@@ -32,7 +32,13 @@ CREATE TABLE IF NOT EXISTS mapping (
     isin            TEXT PRIMARY KEY,
     boursorama_code TEXT,
     yahoo_ticker    TEXT,
-    source          TEXT NOT NULL DEFAULT 'auto'   -- 'auto' or 'manual'
+    source          TEXT NOT NULL DEFAULT 'auto'   -- 'auto' (name), 'page' (ISIN on the stock's page) or 'manual'
+);
+
+CREATE TABLE IF NOT EXISTS isin_lookup (
+    boursorama_code TEXT PRIMARY KEY,
+    isin            TEXT,          -- ISIN of the universe shown on the stock's page, NULL if none
+    checked_on      TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS daily_volume (

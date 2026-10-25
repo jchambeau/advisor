@@ -85,3 +85,60 @@ def test_load_manual_with_extra_columns(tmp_path):
     file = tmp_path / "mappings.csv"
     file.write_text("isin;boursorama_code;yahoo_ticker\nFR0013341781;1rPAL2SI;;note\n", encoding="utf-8")
     assert m.load_manual(file) == [{"isin": "FR0013341781", "boursorama_code": "1rPAL2SI", "yahoo_ticker": ""}]
+
+
+def test_secondary_listing_keeps_the_company_venue(conn):
+    conn.execute("INSERT INTO company (isin, name, market) VALUES ('FR0012821890', 'ADUX', 'Euronext Growth Paris')")
+    companies = conn.execute("SELECT * FROM company").fetchall()
+    matched, unmatched = m.match(companies, {"1rPALDUX": "ADUX", "1rAADUX": "ADUX"})
+    assert matched == {"1rPALDUX": "FR0012821890"} and unmatched == []
+
+
+def test_several_codes_off_venue_stay_unmatched(conn):
+    conn.execute("INSERT INTO company (isin, name, market) VALUES ('FR0012821890', 'ADUX', 'Euronext Growth Paris')")
+    companies = conn.execute("SELECT * FROM company").fetchall()
+    matched, unmatched = m.match(companies, {"1rAADUX": "ADUX", "FF11-ADUX": "ADUX"})
+    assert matched == {} and len(unmatched) == 2
+
+
+def test_page_lookup_matches_and_wins_over_name(conn):
+    from datetime import date
+
+    conn.execute("INSERT INTO company (isin, name, market) VALUES ('FR0012821890', 'ADUX', 'Euronext Growth Paris')")
+    companies = conn.execute("SELECT * FROM company").fetchall()
+    today = date(2026, 10, 26)
+    assert m.codes_to_look_up(conn, ["1rPALDUX", "1rPX"], today, 30) == ["1rPALDUX", "1rPX"]
+    m.record_lookup(conn, "1rPALDUX", "FR0012821890", today)
+    m.record_lookup(conn, "1rPX", None, today)
+    m.save_page_matches(conn, m.matches_from_lookups(conn, companies, ["1rPALDUX", "1rPX"]))
+    assert m.isin_by_code(conn) == {"1rPALDUX": "FR0012821890"}
+    m.save(conn, {"1rPOTHER": "FR0012821890"}, [])  # a later name match does not replace it
+    assert m.isin_by_code(conn) == {"1rPALDUX": "FR0012821890"}
+    # Found codes are not read again; a page with nothing is read again after the retry delay.
+    assert m.codes_to_look_up(conn, ["1rPALDUX", "1rPX"], date(2026, 11, 1), 30) == []
+    assert m.codes_to_look_up(conn, ["1rPALDUX", "1rPX"], date(2026, 12, 1), 30) == ["1rPX"]
+
+
+def test_manual_line_wins_over_page_match(conn):
+    m.save_page_matches(conn, {"1rPX": "FR0013341781"})
+    m.save(conn, {}, [{"isin": "FR0011040500", "boursorama_code": "1rPX"}])
+    assert m.isin_by_code(conn) == {"1rPX": "FR0011040500"}
+
+
+def test_lone_off_venue_lookup_waits_for_the_venue_line(conn):
+    from datetime import date
+
+    conn.execute("INSERT INTO company (isin, name, market) VALUES ('FR0012821890', 'ADUX', 'Euronext Growth Paris')")
+    companies = conn.execute("SELECT * FROM company").fetchall()
+    m.record_lookup(conn, "1rAADUX", "FR0012821890", date(2026, 10, 26))
+    assert m.matches_from_lookups(conn, companies, ["1rAADUX"]) == {}
+    m.record_lookup(conn, "1rPALDUX", "FR0012821890", date(2026, 10, 27))
+    assert m.matches_from_lookups(conn, companies, ["1rAADUX", "1rPALDUX"]) == {"1rPALDUX": "FR0012821890"}
+
+
+def test_name_match_on_a_page_row_that_lost_its_code_is_auto_again(conn):
+    m.save_page_matches(conn, {"1rPX": "FR0013341781"})
+    m.save(conn, {}, [{"isin": "FR0011040500", "boursorama_code": "1rPX"}])  # manual line takes the code
+    m.save(conn, {"1rPY": "FR0013341781"}, [])
+    r = conn.execute("SELECT * FROM mapping WHERE isin = 'FR0013341781'").fetchone()
+    assert (r["boursorama_code"], r["source"]) == ("1rPY", "auto")
