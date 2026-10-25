@@ -56,8 +56,8 @@ every few steps.
 
 Boursorama does not show the ISIN, so stocks are matched by name. Unmatched stocks are listed
 in `data/exports/unmatched_boursorama.csv`. To fix one, create `mappings.csv` next to
-`config.yaml` (or wherever `paths.mappings` points) from `mappings.example.csv`: one line per
-company, `isin;boursorama_code;yahoo_ticker`, any column but `isin` may be left empty. It always
+`config.yaml` (or wherever `paths.mappings` points) from `mappings.example.csv` (header only): one line per
+company, e.g. `FR0013341781;1rPAL2SI;AL2SI.PA`; any column but `isin` may be left empty. It always
 wins over the automatic match.
 
 ### 4. Liquidity filter
