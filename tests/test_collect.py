@@ -219,7 +219,10 @@ def test_collect_command_end_to_end(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "date", Today)
     monkeypatch.setattr(collect, "client_for", lambda cfg: _client(pages))
     assert main(["--config", config, "collect"]) == 0
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
+    for step in ("Inbox: 1 added", "Feeds: 2 new articles", "Article texts: ", "Company names: "):
+        assert step in captured.err
     assert "Inbox: 1 added" in out and "2 new articles; 1 ready for analysis, 1 waiting for their text" in out
     assert "no liquid company yet" in out
     assert (inbox / "Done" / "mine.md").exists() and not (inbox / "mine.md").exists()

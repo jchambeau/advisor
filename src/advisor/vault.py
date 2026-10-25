@@ -4,7 +4,8 @@ Layout used here:
     Inbox/              notes you add by hand (a URL, or a clipped/pasted article)
     Inbox/To-complete/  articles behind a paywall, waiting for their text or `action: withdraw`
     Inbox/Done/         notes already taken into the database (kept, never deleted)
-    Journal/            the daily digest; its auto block is rewritten on each run of the day
+    Journal/            the daily digest; its auto blocks are rewritten on each run of the day
+    Sources/            one note per analysed article: summary and signals (auto block)
 """
 
 from __future__ import annotations
@@ -140,18 +141,61 @@ def pending_notes(vault: Path) -> list[PendingNote]:
     return notes
 
 
-def write_digest(vault: Path, day: date, lines: list[str]) -> Path:
-    """Write the digest between the auto markers; anything you wrote outside them is kept."""
+def write_digest(vault: Path, day: date, lines: list[str], block: str = "auto") -> Path:
+    """Write the digest between the markers of `block`; anything you wrote outside them is kept.
+    The collection block opens the note, the other blocks follow it."""
     folder = vault / "Journal"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{day.isoformat()}.md"
-    block = f"{AUTO_START}\n" + "\n".join(lines) + f"\n{AUTO_END}"
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
-    start = old.find(AUTO_START)
-    end = old.rfind(AUTO_END)
-    if start != -1 and end > start:
-        content = old[:start] + block + old[end + len(AUTO_END):]
-    else:
-        content = block + "\n\n" + old if old else block + "\n"
-    path.write_text(content, encoding="utf-8")
+    write_block(path, lines, block, first=block == "auto")
     return path
+
+
+def write_block(path: Path, lines: list[str], block: str = "auto", first: bool = True) -> None:
+    start_marker, end_marker = (AUTO_START, AUTO_END) if block == "auto" else (f"<!-- {block} -->", f"<!-- /{block} -->")
+    text = f"{start_marker}\n" + "\n".join(lines) + f"\n{end_marker}"
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    start = _marker_line(old, start_marker)
+    end = old.rfind(end_marker)
+    if start != -1 and end > start:
+        content = old[:start] + text + old[end + len(end_marker):]
+    elif not old:
+        content = text + "\n"
+    elif first:
+        content = text + "\n\n" + old
+    else:
+        content = old.rstrip("\n") + "\n\n" + text + "\n"
+    path.write_text(content, encoding="utf-8")
+
+
+def _marker_line(text: str, marker: str) -> int:
+    """Position of the marker standing alone on its line (as written), or -1."""
+    match = re.search(rf"^{re.escape(marker)}$", text, re.M)
+    return match.start() if match else -1
+
+
+def source_name(doc: sqlite3.Row) -> str:
+    return f"{doc['published_on'] or doc['added_on']}-{doc['id']}-{slug(doc['title'] or doc['url'], 50)}"
+
+
+def write_source(vault: Path, doc: sqlite3.Row, lines: list[str]) -> Path:
+    folder = vault / "Sources"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{source_name(doc)}.md"
+    write_block(path, lines)
+    return path
+
+
+def md_text(text: str) -> str:
+    """Keep external text from breaking the note's links and lists."""
+    text = str(text)
+    while True:  # until stable: "<!<!---- x --<!---->>" must not rebuild a block marker
+        cleaned = text.replace("<!--", "").replace("-->", "")
+        if cleaned == text:
+            break
+        text = cleaned
+    return " ".join(text.replace("[", "(").replace("]", ")").replace("|", "/").split())
+
+
+def md_url(url: str) -> str:
+    return url.replace(" ", "%20").replace("(", "%28").replace(")", "%29").replace("<", "%3C").replace(">", "%3E")

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import date
 from pathlib import Path
 
-from . import boursorama, collect, documents, euronext, history, liquidity, mappings, overrides, sources, vault
+import anthropic
+
+from . import (boursorama, collect, documents, euronext, history, liquidity, mappings, overrides, signals,
+               sources, vault)
 from .config import load
 from .db import connect
 from .progress import Progress
@@ -201,28 +205,39 @@ def cmd_collect(args) -> int:
     summary = collect.Summary()
     collect.take_inbox(conn, cfg, today, summary)
     collect.take_pending(conn, cfg, today, summary)
+    _step(f"Inbox: {summary.inbox} added, {summary.completed} completed, {summary.withdrawn} withdrawn")
     with collect.client_for(cfg) as client:
-        collect.collect_feeds(conn, cfg, client, today, summary)
+        feeds = collect.enabled_feeds(cfg)
+        progress = Progress("Feeds", total=len(feeds), every=10)
+        try:
+            collect.collect_feeds(conn, cfg, client, today, summary, on_feed=progress.update)
+        finally:
+            progress.done(f"{summary.added} new articles")
         news = cfg.collect["boursorama_news"]
         if news["enabled"] and not args.no_news_pages:
             isins = _liquid_isins(conn) if news["liquid_only"] else {c["isin"] for c in companies}
             if not isins:
                 summary.problems.append("no liquid company yet: stock news pages skipped (run advisor liquidity)")
+            before = summary.added
             progress = Progress("Stock news pages", total=min(len(isins), int(news["pages_per_run"])), every=25)
             try:
                 collect.collect_news_pages(conn, cfg, client, isins, today, summary, on_page=progress.update)
             finally:
-                progress.done(f"{summary.news_pages} pages read")
+                progress.done(f"{summary.news_pages} pages read, {summary.added - before} new articles")
         waiting = conn.execute(
             "SELECT COUNT(*) AS n FROM document WHERE status = 'new' OR (status = 'fetch_failed' AND attempts < ?)",
             (collect.MAX_ATTEMPTS,),
         ).fetchone()["n"]
-        progress = Progress("Articles", total=min(waiting, int(cfg.collect["max_article_fetches"])), every=25)
+        progress = Progress("Article texts", total=min(waiting, int(cfg.collect["max_article_fetches"])), every=10)
         try:
             collect.fetch_texts(conn, cfg, client, today, summary, on_doc=progress.update)
         finally:
-            progress.done(f"{summary.ready} ready, {summary.pending} waiting for you")
-    collect.link_names(conn, companies, summary.touched)
+            progress.done(f"{summary.ready} ready, {summary.pending} waiting for you, {summary.failed} failed")
+    progress = Progress("Company names", total=len(summary.touched), every=100)
+    try:
+        collect.link_names(conn, companies, summary.touched, on_doc=progress.update)
+    finally:
+        progress.done(f"{len(summary.touched)} articles checked")
     path = vault.write_digest(cfg.vault, today, collect.digest_lines(conn, today, summary))
     print(f"Inbox: {summary.inbox} added, {summary.completed} completed, {summary.withdrawn} withdrawn")
     print(f"Collected: {summary.added} new articles; {summary.ready} ready for analysis, "
@@ -231,6 +246,11 @@ def cmd_collect(args) -> int:
         print(f"Warning: {problem}")
     print(f"Digest: {path}")
     return 0
+
+
+def _step(text: str) -> None:
+    """A finished step without a progress bar, on stderr next to the bars."""
+    print(text, file=sys.stderr, flush=True)
 
 
 def cmd_add(args) -> int:
@@ -293,8 +313,45 @@ def cmd_sources_check(args) -> int:
     return 1 if failures else 0
 
 
+def cmd_extract(args) -> int:
+    cfg, conn = _context(args)
+    today = date.today()
+    llm = cfg.llm
+    size = signals.run_size(llm, args.limit)
+    if args.dry_run:
+        docs = signals.to_extract(conn, size)
+        chars = sum(min(len(d["text"] or ""), int(llm["max_text_chars"])) for d in docs)
+        tokens = chars // 3 + 1500 * len(docs)  # rough: ~3 characters a token, plus prompt and schema
+        print(f"{len(docs)} articles would be analysed with {llm['model']}, about {tokens:,} input tokens, "
+              f"about {signals.cost(llm, tokens, 600 * len(docs)):.3f} USD.")
+        for doc in docs[:20]:
+            print(f"  {doc['id']}: {doc['title'] or doc['url']}")
+        return 0
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        print("ANTHROPIC_API_KEY is not set: signal extraction skipped (see the README).")
+        return 0 if args.command == "daily" else 1
+    run = signals.RunSummary()
+    progress = Progress("Analysis", total=min(size, signals.waiting_count(conn)), every=10)
+    try:
+        with anthropic.Anthropic(max_retries=3) as client:
+            signals.run(conn, llm, client, today, limit=args.limit, on_doc=progress.update, summary=run)
+    finally:
+        progress.done()
+        # Also after an interruption: what was analysed gets its notes and its place in the digest.
+        for doc_id in run.touched:
+            doc = conn.execute("SELECT * FROM document WHERE id = ?", (doc_id,)).fetchone()
+            vault.write_source(cfg.vault, doc, signals.source_lines(conn, doc))
+        path = vault.write_digest(cfg.vault, today, signals.digest_lines(conn, today, run), block="signals")
+    print(f"Analysed: {run.extracted} articles, {run.signals} signals ({run.dropped} dropped), "
+          f"{run.failed} failed, about {run.cost_usd:.3f} USD")
+    if run.stopped:
+        print(f"Stopped early: {run.stopped}")
+    print(f"Digest: {path}")
+    return 1 if run.stopped and not run.stopped.startswith("daily budget") else 0
+
+
 def cmd_daily(args) -> int:
-    """Evening run: volume snapshot, liquidity update, then news collection."""
+    """Evening run: volume snapshot, liquidity update, news collection, then signal extraction."""
     try:
         fetched = cmd_fetch_volumes(args)
     except Exception as exc:  # network error, bad mappings.csv...: still refresh liquidity
@@ -306,7 +363,13 @@ def cmd_daily(args) -> int:
     except Exception as exc:
         print(f"News collection failed: {exc!r}")
         collected = 1
-    return fetched or computed or collected
+    args.limit, args.dry_run = None, False
+    try:
+        extracted = cmd_extract(args)
+    except Exception as exc:
+        print(f"Signal extraction failed: {exc!r}")
+        extracted = 1
+    return fetched or computed or collected or extracted
 
 
 def cmd_status(args) -> int:
@@ -326,6 +389,10 @@ def cmd_status(args) -> int:
             print(f"  {row['status']}: {row['n']} (computed on {r['d']})")
     counts = conn.execute("SELECT status, COUNT(*) AS n FROM document GROUP BY status ORDER BY status").fetchall()
     print("Documents: " + (", ".join(f"{c['status']} {c['n']}" for c in counts) or "none"))
+    r = conn.execute("SELECT COUNT(*) AS n FROM signal").fetchone()
+    spent = conn.execute("SELECT COALESCE(SUM(cost_usd), 0) AS c, MIN(day) AS since FROM llm_usage").fetchone()
+    print(f"Signals: {r['n']}" + (f" (language model: {spent['c']:.2f} USD since {spent['since']})"
+                                    if spent["since"] else ""))
     return 0
 
 
@@ -368,7 +435,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sources-check", help="test every feed of sources.yaml")
     s.set_defaults(func=cmd_sources_check)
 
-    s = sub.add_parser("daily", help="evening run: Boursorama volumes, liquidity, then news collection")
+    s = sub.add_parser("extract", help="analyse the ready articles with the language model (signals)")
+    s.add_argument("--limit", type=int, help="analyse at most N articles")
+    s.add_argument("--dry-run", action="store_true", help="show what would be analysed and its cost, call nothing")
+    s.set_defaults(func=cmd_extract)
+
+    s = sub.add_parser("daily", help="evening run: volumes, liquidity, news collection, signal extraction")
     s.add_argument("--date", help="session date (YYYY-MM-DD), default: today")
     s.add_argument("--force", action="store_true", help="see fetch-volumes")
     s.add_argument("--no-news-pages", action="store_true", help="see collect")

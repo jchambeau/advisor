@@ -54,3 +54,21 @@ collect:
     pages_per_run: 150         # stocks visited per run, the least recently visited first
     first_visit_items: 5       # a first visit only takes the latest items, not years of history
     liquid_only: true          # only stocks of the liquid universe
+
+# Signal extraction (`advisor extract`, also run by `advisor daily` when ANTHROPIC_API_KEY is set).
+# Each ready article is sent to the model, which returns signals as JSON; a signal is kept only
+# if its quote is found word for word in the article.
+llm:
+  model: claude-haiku-5-5
+  effort: low                  # low, medium, high: more thinking costs more output tokens
+  max_tokens: 8000             # per answer, thinking included
+  max_documents_per_run: 150
+  max_text_chars: 30000        # longer articles are cut
+  daily_budget_usd: 0.50       # the run stops once the estimated cost of the day reaches this
+  price_input_per_mtok: 0.10   # USD per million tokens, used for the cost estimate only
+  price_output_per_mtok: 0.50
+  # Macro factors the model may target (key: meaning). The defaults are listed in
+  # src/advisor/config.py; add yours here, or set one to null to drop it.
+  # factors:
+  #   housing: "property prices and construction"
+  #   currency: null

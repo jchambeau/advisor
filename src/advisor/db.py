@@ -52,9 +52,13 @@ CREATE TABLE IF NOT EXISTS document (
     published_on TEXT,                  -- publication date, places the document in the history
     added_on     TEXT NOT NULL,         -- date it entered the database
     ready_on     TEXT,                  -- date its text became available for analysis
-    status       TEXT NOT NULL,         -- new, ready, pending, withdrawn, too_old, fetch_failed
+    status       TEXT NOT NULL,         -- new, ready, pending, withdrawn, too_old, fetch_failed,
+                                        -- extracted, extraction_failed
     attempts     INTEGER NOT NULL DEFAULT 0,
-    note         TEXT                   -- why pending or failed
+    note         TEXT,                  -- why pending or failed
+    llm_summary  TEXT,                  -- short summary written by the extraction
+    extracted_on TEXT,
+    extract_attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS document_title_key ON document (title_key);
 CREATE INDEX IF NOT EXISTS document_status ON document (status);
@@ -69,6 +73,33 @@ CREATE TABLE IF NOT EXISTS document_company (
 CREATE TABLE IF NOT EXISTS news_page_visit (
     boursorama_code TEXT PRIMARY KEY,
     visited_on      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS signal (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id  INTEGER NOT NULL REFERENCES document (id),
+    target_kind  TEXT NOT NULL,         -- company, sector or factor
+    target       TEXT NOT NULL,         -- ISIN, sector label or factor key
+    type         TEXT NOT NULL,         -- results, guidance, orders_contracts... (signals.SIGNAL_TYPES)
+    direction    INTEGER NOT NULL,      -- -1, 0 or +1 for the target
+    intensity    INTEGER NOT NULL,      -- 1 minor, 2 notable, 3 major
+    confidence   TEXT NOT NULL,         -- low, medium, high
+    quote        TEXT NOT NULL,         -- excerpt of the article that supports it
+    author       TEXT NOT NULL,         -- 'llm' (kept for your own opinions later)
+    model        TEXT,
+    extracted_on TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS signal_target ON signal (target_kind, target);
+CREATE INDEX IF NOT EXISTS signal_document ON signal (document_id);
+
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    day           TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    document_id   INTEGER,
+    input_tokens  INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cost_usd      REAL NOT NULL         -- estimated from the prices in config.yaml
 );
 
 CREATE TABLE IF NOT EXISTS daily_volume (
@@ -111,3 +142,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         with conn:
             conn.execute("INSERT OR IGNORE INTO stock_page_isin SELECT * FROM isin_lookup WHERE isin IS NOT NULL")
             conn.execute("DROP TABLE isin_lookup")
+    # Columns added by the signal extraction, on a database created before it.
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(document)")}
+    for name, kind in (("llm_summary", "TEXT"), ("extracted_on", "TEXT"),
+                       ("extract_attempts", "INTEGER NOT NULL DEFAULT 0")):
+        if name not in columns:
+            with conn:
+                conn.execute(f"ALTER TABLE document ADD COLUMN {name} {kind}")
