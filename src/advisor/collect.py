@@ -97,12 +97,16 @@ def take_pending(conn: sqlite3.Connection, cfg: Config, today: date, summary: Su
             vault.done_with(cfg.vault, note.path)
 
 
+def enabled_feeds(cfg: Config) -> list[sources.Source]:
+    return [s for s in sources.load(cfg.sources) if s.enabled]
+
+
 def collect_feeds(conn: sqlite3.Connection, cfg: Config, client: httpx.Client, today: date,
-                  summary: Summary) -> None:
+                  summary: Summary, on_feed: Callable[[int, str], None] | None = None) -> None:
     oldest = today - timedelta(days=int(cfg.collect["max_age_days"]))
-    for source in sources.load(cfg.sources):
-        if not source.enabled:
-            continue
+    for i, source in enumerate(enabled_feeds(cfg), 1):
+        if on_feed:
+            on_feed(i, source.name)
         try:
             response = client.get(source.url)
             response.raise_for_status()
@@ -226,9 +230,12 @@ def _pending_or_summary(conn, cfg: Config, doc, feed: sources.Source | None, rea
     summary.pending += 1
 
 
-def link_names(conn: sqlite3.Connection, companies: list[sqlite3.Row], doc_ids: set[int]) -> None:
+def link_names(conn: sqlite3.Connection, companies: list[sqlite3.Row], doc_ids: set[int],
+               on_doc: Callable[[int, str], None] | None = None) -> None:
     index = documents.NameIndex(companies)
-    for doc_id in sorted(doc_ids):
+    for i, doc_id in enumerate(sorted(doc_ids), 1):
+        if on_doc:
+            on_doc(i, "")
         doc = conn.execute("SELECT title, summary, text FROM document WHERE id = ?", (doc_id,)).fetchone()
         if doc is None:
             continue

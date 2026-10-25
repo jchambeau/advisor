@@ -205,28 +205,39 @@ def cmd_collect(args) -> int:
     summary = collect.Summary()
     collect.take_inbox(conn, cfg, today, summary)
     collect.take_pending(conn, cfg, today, summary)
+    _step(f"Inbox: {summary.inbox} added, {summary.completed} completed, {summary.withdrawn} withdrawn")
     with collect.client_for(cfg) as client:
-        collect.collect_feeds(conn, cfg, client, today, summary)
+        feeds = collect.enabled_feeds(cfg)
+        progress = Progress("Feeds", total=len(feeds), every=10)
+        try:
+            collect.collect_feeds(conn, cfg, client, today, summary, on_feed=progress.update)
+        finally:
+            progress.done(f"{summary.added} new articles")
         news = cfg.collect["boursorama_news"]
         if news["enabled"] and not args.no_news_pages:
             isins = _liquid_isins(conn) if news["liquid_only"] else {c["isin"] for c in companies}
             if not isins:
                 summary.problems.append("no liquid company yet: stock news pages skipped (run advisor liquidity)")
+            before = summary.added
             progress = Progress("Stock news pages", total=min(len(isins), int(news["pages_per_run"])), every=25)
             try:
                 collect.collect_news_pages(conn, cfg, client, isins, today, summary, on_page=progress.update)
             finally:
-                progress.done(f"{summary.news_pages} pages read")
+                progress.done(f"{summary.news_pages} pages read, {summary.added - before} new articles")
         waiting = conn.execute(
             "SELECT COUNT(*) AS n FROM document WHERE status = 'new' OR (status = 'fetch_failed' AND attempts < ?)",
             (collect.MAX_ATTEMPTS,),
         ).fetchone()["n"]
-        progress = Progress("Articles", total=min(waiting, int(cfg.collect["max_article_fetches"])), every=25)
+        progress = Progress("Article texts", total=min(waiting, int(cfg.collect["max_article_fetches"])), every=10)
         try:
             collect.fetch_texts(conn, cfg, client, today, summary, on_doc=progress.update)
         finally:
-            progress.done(f"{summary.ready} ready, {summary.pending} waiting for you")
-    collect.link_names(conn, companies, summary.touched)
+            progress.done(f"{summary.ready} ready, {summary.pending} waiting for you, {summary.failed} failed")
+    progress = Progress("Company names", total=len(summary.touched), every=100)
+    try:
+        collect.link_names(conn, companies, summary.touched, on_doc=progress.update)
+    finally:
+        progress.done(f"{len(summary.touched)} articles checked")
     path = vault.write_digest(cfg.vault, today, collect.digest_lines(conn, today, summary))
     print(f"Inbox: {summary.inbox} added, {summary.completed} completed, {summary.withdrawn} withdrawn")
     print(f"Collected: {summary.added} new articles; {summary.ready} ready for analysis, "
@@ -235,6 +246,11 @@ def cmd_collect(args) -> int:
         print(f"Warning: {problem}")
     print(f"Digest: {path}")
     return 0
+
+
+def _step(text: str) -> None:
+    """A finished step without a progress bar, on stderr next to the bars."""
+    print(text, file=sys.stderr, flush=True)
 
 
 def cmd_add(args) -> int:
