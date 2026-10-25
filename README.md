@@ -32,7 +32,8 @@ advisor import-list data/lists/liste_pea_pme_23_October_2026.xlsx
 
 The tool shows the companies added, returned and removed compared with the previous list,
 and asks for confirmation before applying (`--yes` to skip it, `--all` to list everything).
-A company removed from the list stays in the database, flagged as removed.
+A company removed from the list stays in the database, flagged as removed. A list older than
+the latest imported one is refused unless `--force` is given.
 
 ### 2. Manual inclusions and exclusions
 

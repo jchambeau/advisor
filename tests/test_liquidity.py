@@ -88,3 +88,13 @@ def test_boursorama_priority_and_stored_result(conn):
     assert res["FR0013341781"].status == UNKNOWN
     row = conn.execute("SELECT * FROM liquidity").fetchone()
     assert row["computed_on"] == "2026-10-24" and row["session_count"] == 1
+
+
+def test_previous_status_skips_unknown(conn):
+    from advisor.liquidity import previous_status
+
+    conn.executemany(
+        "INSERT INTO liquidity VALUES ('FR0013341781', ?, 63, 0, 1, ?)",
+        [("2026-10-01", LIQUID), ("2026-10-15", UNKNOWN)],
+    )
+    assert previous_status(conn, "FR0013341781", "2026-10-24") == LIQUID

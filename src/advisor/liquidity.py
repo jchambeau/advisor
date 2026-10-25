@@ -95,7 +95,9 @@ def stored_sessions(conn: sqlite3.Connection, isin: str) -> list[Session]:
 
 def previous_status(conn: sqlite3.Connection, isin: str, before: str) -> str | None:
     r = conn.execute(
-        "SELECT status FROM liquidity WHERE isin = ? AND computed_on < ? ORDER BY computed_on DESC LIMIT 1",
+        # "unknown" says nothing about the stock: look past it so the hysteresis survives a gap.
+        "SELECT status FROM liquidity WHERE isin = ? AND computed_on < ? AND status <> 'unknown' "
+        "ORDER BY computed_on DESC LIMIT 1",
         (isin, before),
     ).fetchone()
     return r["status"] if r else None

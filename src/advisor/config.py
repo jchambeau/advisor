@@ -60,6 +60,8 @@ class Config:
 def _merge(defaults: dict, values: dict) -> dict:
     result = dict(defaults)
     for key, value in (values or {}).items():
+        if value is None and isinstance(defaults.get(key), dict):
+            continue  # a section left empty (all lines commented out) keeps its defaults
         if isinstance(value, dict) and isinstance(defaults.get(key), dict):
             result[key] = _merge(defaults[key], value)
         else:

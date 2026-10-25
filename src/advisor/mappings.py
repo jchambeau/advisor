@@ -48,6 +48,15 @@ def match(companies: list[sqlite3.Row], boursorama_names: dict[str, str]) -> tup
             matched[code] = candidates[0]
         else:
             unmatched.append((code, name))
+    # Several codes for one ISIN (two lines with the same name): ambiguous as well.
+    codes_per_isin: dict[str, list[str]] = {}
+    for code, isin in matched.items():
+        codes_per_isin.setdefault(isin, []).append(code)
+    for codes in codes_per_isin.values():
+        if len(codes) > 1:
+            for code in codes:
+                unmatched.append((code, boursorama_names[code]))
+                del matched[code]
     return matched, unmatched
 
 
@@ -59,7 +68,7 @@ def load_manual(path: Path) -> list[dict]:
         if "isin" not in (reader.fieldnames or []):
             raise ValueError(f"{path.name}: expected header isin;boursorama_code;yahoo_ticker, got {reader.fieldnames}")
         return [
-            {k: (v or "").strip() for k, v in row.items()}
+            {k: (v or "").strip() for k, v in row.items() if k is not None}  # extra columns go under None
             for row in reader
             if (row.get("isin") or "").strip()
         ]
@@ -71,6 +80,11 @@ def save(conn: sqlite3.Connection, automatic: dict[str, str], manual: list[dict]
         for code, isin in automatic.items():
             if code in manual_codes:
                 continue  # a manual line already says which company this code belongs to
+            # The code now belongs to this ISIN: release it from any other automatic row.
+            conn.execute(
+                "UPDATE mapping SET boursorama_code = NULL WHERE boursorama_code = ? AND isin <> ? AND source = 'auto'",
+                (code, isin),
+            )
             conn.execute(
                 """
                 INSERT INTO mapping (isin, boursorama_code, yahoo_ticker, source)

@@ -59,11 +59,33 @@ def test_fetch_stops_when_nothing_new():
         return httpx.Response(200, text=PAGE)
 
     client = httpx.Client(transport=httpx.MockTransport(respond))
-    rows = boursorama.fetch(
+    rows, error = boursorama.fetch(
         {"url": "https://example.test/cotations/", "market_filter": "PEAPME", "max_pages": 10, "pause_seconds": 0},
         client,
     )
-    assert len(rows) == 3 and len(calls) == 2
+    assert len(rows) == 3 and len(calls) == 2 and error is None
+
+
+def test_fetch_keeps_pages_read_before_an_error():
+    def respond(request):
+        if "page-2" in str(request.url):
+            return httpx.Response(502)
+        return httpx.Response(200, text=PAGE)
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    rows, error = boursorama.fetch(
+        {"url": "https://example.test/cotations/", "market_filter": "PEAPME", "max_pages": 10, "pause_seconds": 0},
+        client,
+    )
+    assert len(rows) == 3 and "page 2" in error
+
+
+def test_fetch_first_page_error_raises():
+    import pytest
+
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
+    with pytest.raises(httpx.HTTPError):
+        boursorama.fetch({"url": "https://example.test/", "market_filter": "PEAPME", "pause_seconds": 0}, client)
 
 
 def test_save_with_market_currency(conn):
@@ -86,3 +108,11 @@ def test_repeated_share(conn):
     assert boursorama.repeated_share(conn, rows, codes, date(2026, 10, 24)) == 1.0
     rows[0].volume += 1
     assert boursorama.repeated_share(conn, rows, codes, date(2026, 10, 24)) == 0.5
+
+
+def test_repeated_share_ignores_stocks_without_trade(conn):
+    rows = boursorama.parse(PAGE)
+    codes = {"1rPAL2SI": "FR0013341781", "1rPALXYZ": "FR0011040500"}  # second one has no trade
+    boursorama.save(conn, rows, codes, {}, date(2026, 10, 23))
+    rows[0].volume += 1
+    assert boursorama.repeated_share(conn, rows, codes, date(2026, 10, 24)) == 0.0

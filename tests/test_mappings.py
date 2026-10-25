@@ -66,3 +66,22 @@ def test_load_manual_rejects_bad_header(tmp_path):
     file.write_text("code,isin\n", encoding="utf-8")
     with pytest.raises(ValueError):
         m.load_manual(file)
+
+
+def test_two_codes_for_one_isin_are_ambiguous(conn):
+    companies = _companies(conn, [("FR0013341781", "ATOS")])
+    matched, unmatched = m.match(companies, {"1rPA": "ATOS", "1rPB": "Atos SE"})
+    assert matched == {} and sorted(c for c, _ in unmatched) == ["1rPA", "1rPB"]
+
+
+def test_auto_code_moving_to_another_isin(conn):
+    m.save(conn, {"1rPX": "FR0013341781"}, [])
+    m.save(conn, {"1rPX": "FR0011040500"}, [])
+    rows = conn.execute("SELECT isin FROM mapping WHERE boursorama_code = '1rPX'").fetchall()
+    assert [r["isin"] for r in rows] == ["FR0011040500"]
+
+
+def test_load_manual_with_extra_columns(tmp_path):
+    file = tmp_path / "mappings.csv"
+    file.write_text("isin;boursorama_code;yahoo_ticker\nFR0013341781;1rPAL2SI;;note\n", encoding="utf-8")
+    assert m.load_manual(file) == [{"isin": "FR0013341781", "boursorama_code": "1rPAL2SI", "yahoo_ticker": ""}]

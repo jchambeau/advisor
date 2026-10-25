@@ -30,8 +30,10 @@ def cmd_import_list(args) -> int:
         print(f"  line {line_no} skipped: {reason}")
 
     latest = euronext.latest_list_date(conn)
-    if latest and new_list.list_date and new_list.list_date.isoformat() < latest:
-        print(f"Warning: this list is older than the latest imported one ({latest}).")
+    if latest and new_list.list_date and new_list.list_date.isoformat() < latest and not args.force:
+        print(f"This list is older than the latest imported one ({latest}): importing it would flag "
+              "newer companies as removed. Nothing changed (--force to import anyway).")
+        return 1
 
     changes = euronext.compare(conn, new_list)
     print(f"Added: {len(changes.added)}  Returned: {len(changes.returned)}  "
@@ -77,8 +79,13 @@ def cmd_fetch_volumes(args) -> int:
         print("Empty universe: import a list first (advisor import-list).")
         return 1
 
-    rows = boursorama.fetch(cfg.boursorama)
+    rows, error = boursorama.fetch(cfg.boursorama)
     print(f"Boursorama: {len(rows)} stocks read")
+    if error:
+        print(f"Warning: crawl stopped early ({error}); saving the pages already read.")
+    if not rows:
+        print("No stock read: the page layout may have changed. Nothing saved.")
+        return 1
 
     matched, unmatched = mappings.match(companies, {r.code: r.name for r in rows})
     mappings.save(conn, matched, mappings.load_manual(cfg.mappings))
@@ -89,7 +96,9 @@ def cmd_fetch_volumes(args) -> int:
         print(f"{repeated:.0%} of stocks show the same close and volume as the previous snapshot: "
               "the market was probably closed. Nothing saved (--force to save anyway).")
         return 0
-    currency_by_isin = {c["isin"]: liquidity.default_currency(c["market"]) for c in companies}
+    currency_by_isin = {
+        r["isin"]: liquidity.default_currency(r["market"]) for r in conn.execute("SELECT isin, market FROM company")
+    }
     n = boursorama.save(conn, rows, codes, currency_by_isin, day)
     print(f"Session of {day} saved for {n} companies")
     if unmatched:
@@ -127,7 +136,11 @@ def cmd_liquidity(args) -> int:
 
 def cmd_daily(args) -> int:
     """Evening run: volume snapshot, then liquidity update."""
-    fetched = cmd_fetch_volumes(args)
+    try:
+        fetched = cmd_fetch_volumes(args)
+    except Exception as exc:  # network error, bad mappings.csv...: still refresh liquidity
+        print(f"Volume fetch failed: {exc!r}")
+        fetched = 1
     computed = cmd_liquidity(args)  # refreshed even when no session was saved
     return fetched or computed
 
@@ -159,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("file")
     s.add_argument("--yes", action="store_true", help="apply without asking for confirmation")
     s.add_argument("--all", action="store_true", help="list every added and removed company")
+    s.add_argument("--force", action="store_true", help="import even a list older than the latest one")
     s.set_defaults(func=cmd_import_list)
 
     s = sub.add_parser("fetch-volumes", help="save today's session from Boursorama")

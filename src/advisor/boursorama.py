@@ -82,15 +82,26 @@ def page_url(base: str, market_filter: str, page: int) -> str:
     return f"{path}?quotation_az_filter%5Bmarket%5D={market_filter}"
 
 
-def fetch(config: dict, client: httpx.Client | None = None) -> list[Row]:
-    """Walk the pages until one of them brings no new stock."""
+def fetch(config: dict, client: httpx.Client | None = None) -> tuple[list[Row], str | None]:
+    """Walk the pages until one of them brings no new stock.
+
+    Returns the rows and, when a later page failed, the error that stopped the crawl
+    (the rows already read are kept). A failure on the first page raises.
+    """
     owned = client is None
     client = client or httpx.Client(headers=HTTP_HEADERS, timeout=30, follow_redirects=True)
     seen: dict[str, Row] = {}
+    error = None
     try:
         for page in range(1, int(config.get("max_pages", 60)) + 1):
-            response = client.get(page_url(config["url"], config["market_filter"], page))
-            response.raise_for_status()
+            try:
+                response = client.get(page_url(config["url"], config["market_filter"], page))
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                if page == 1:
+                    raise
+                error = f"page {page}: {exc}"
+                break
             new_rows = [r for r in parse(response.text) if r.code not in seen]
             if not new_rows:
                 break
@@ -99,14 +110,16 @@ def fetch(config: dict, client: httpx.Client | None = None) -> list[Row]:
     finally:
         if owned:
             client.close()
-    return list(seen.values())
+    return list(seen.values()), error
 
 
 def repeated_share(conn: sqlite3.Connection, rows: list[Row], isin_by_code: dict[str, str], day: date) -> float | None:
     """Share of stocks whose close and volume equal their latest stored snapshot before `day`.
 
     A high share means the page still shows a session already saved (holiday, weekend,
-    run before the open). Returns None when there is nothing to compare with.
+    run before the open). Stocks with no trade in that snapshot are left out: an unchanged
+    zero says nothing about the market being closed. Returns None when there is nothing
+    to compare with.
     """
     same = compared = 0
     for r in rows:
@@ -120,7 +133,7 @@ def repeated_share(conn: sqlite3.Connection, rows: list[Row], isin_by_code: dict
             """,
             (isin, day.isoformat()),
         ).fetchone()
-        if last is None:
+        if last is None or not last["volume"]:
             continue
         compared += 1
         same += last["close"] == r.close and last["volume"] == r.volume
